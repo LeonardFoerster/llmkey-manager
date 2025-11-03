@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="de">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>LLM Key Manager</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+        <style>
+            .badge-success {
+                @apply badge bg-green-500 text-white;
+            }
+            .badge-error {
+                @apply badge bg-red-500 text-white;
+            }
+        </style>
+    </head>
+    <body class="bg-gray-100 min-h-screen">
+        <div id="app" class="max-w-4xl mx-auto p-6"></div>
+
+        <script>
+            const api = "http://localhost:5000/api";
+            let token = localStorage.getItem("token");
+            const headers = () => ({
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+            });
+
+            const render = () => {
+                document.getElementById("app").innerHTML = token
+                    ? dashboard()
+                    : loginForm();
+                if (token) loadKeys();
+            };
+
+            const loginForm = () => `
+    <div class="flex items-center justify-center min-h-screen">
+      <div class="card w-96 bg-white shadow-xl">
+        <div class="card-body">
+          <h2 class="card-title">Login / Registrieren</h2>
+          <input id="email" type="email" placeholder="Email" class="input input-bordered w-full mb-2" />
+          <input id="pass" type="password" placeholder="Passwort" class="input input-bordered w-full mb-4" />
+          <button onclick="login()" class="btn btn-primary w-full">Login</button>
+          <p class="text-center text-sm mt-2">Registrieren mit beliebigen Daten</p>
+        </div>
+      </div>
+    </div>
+  `;
+
+            const dashboard = () => `
+    <h1 class="text-3xl font-bold mb-6">LLM Key Manager</h1>
+    <button onclick="showAddModal()" class="btn btn-success mb-4">+ Neuer Key</button>
+    <div class="overflow-x-auto">
+      <table class="table table-zebra w-full">
+        <thead><tr><th>Provider</th><th>Name</th><th>Status</th><th>Aktionen</th></tr></thead>
+        <tbody id="keys"></tbody>
+      </table>
+    </div>
+    <div id="modal" class="modal"></div>
+  `;
+
+            const login = async () => {
+                const email = document.getElementById("email").value;
+                const pass = document.getElementById("pass").value;
+                try {
+                    const res = await fetch(`${api}/login`, {
+                        method: "POST",
+                        headers: headers(),
+                        body: JSON.stringify({ email, password: pass }),
+                    });
+                    if (!res.ok) throw new Error();
+                    const { token: t } = await res.json();
+                    localStorage.setItem("token", t);
+                    token = t;
+                    render();
+                } catch {
+                    alert("Login fehlgeschlagen");
+                }
+            };
+
+            const loadKeys = async () => {
+                const res = await fetch(`${api}/keys`, { headers: headers() });
+                const keys = await res.json();
+                document.getElementById("keys").innerHTML = keys
+                    .map(
+                        (k) => `
+      <tr>
+        <td class="flex items-center gap-2"><div class="w-6 h-6 bg-gray-400 rounded"></div>${k.provider}</td>
+        <td>${k.name}</td>
+        <td><span class="badge ${k.valid ? "badge-success" : "badge-error"}">${k.valid ? "OK" : "Fehler"}</span></td>
+        <td>
+          <button onclick="testKey(${k.id})" class="btn btn-xs btn-primary">Test</button>
+          <button onclick="deleteKey(${k.id})" class="btn btn-xs btn-error ml-1">Löschen</button>
+        </td>
+      </tr>
+    `,
+                    )
+                    .join("");
+            };
+
+            const showAddModal = () => {
+                document.getElementById("modal").innerHTML = `
+      <div class="modal-box">
+        <h3 class="font-bold text-lg">Neuer API Key</h3>
+        <select id="provider" class="select select-bordered w-full mt-4">
+          <option value="openai">OpenAI</option>
+          <option value="grok">Grok</option>
+        </select>
+        <input id="name" type="text" placeholder="Name" class="input input-bordered w-full mt-2" />
+        <input id="key" type="password" placeholder="API Key" class="input input-bordered w-full mt-2" />
+        <div class="modal-action">
+          <button onclick="addKey()" class="btn btn-primary">Speichern</button>
+          <button onclick="closeModal()" class="btn">Abbrechen</button>
+        </div>
+      </div>
+    `;
+                document.getElementById("modal").classList.add("modal-open");
+            };
+
+            const closeModal = () =>
+                (document.getElementById("modal").innerHTML = "");
+            window.showAddModal = showAddModal;
+            window.closeModal = closeModal;
+
+            const addKey = async () => {
+                const provider = document.getElementById("provider").value;
+                const name = document.getElementById("name").value;
+                const key = document.getElementById("key").value;
+                await fetch(`${api}/keys`, {
+                    method: "POST",
+                    headers: headers(),
+                    body: JSON.stringify({ provider, name, key }),
+                });
+                closeModal();
+                loadKeys();
+            };
+            window.addKey = addKey;
+
+            const testKey = async (id) => {
+                const res = await fetch(`${api}/keys/${id}/test`, {
+                    method: "POST",
+                    headers: headers(),
+                });
+                const data = await res.json();
+                alert(data.message);
+                loadKeys();
+            };
+            window.testKey = testKey;
+
+            const deleteKey = async (id) => {
+                if (confirm("Löschen?")) {
+                    await fetch(`${api}/keys/${id}`, {
+                        method: "DELETE",
+                        headers: headers(),
+                    });
+                    loadKeys();
+                }
+            };
+            window.deleteKey = deleteKey;
+
+            render();
+        </script>
+    </body>
+</html>
