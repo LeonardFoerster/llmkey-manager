@@ -61,6 +61,14 @@ interface AuthRequest extends Request {
   user?: User;
 }
 
+interface ApiKeyRow {
+  id: number;
+  provider: string;
+  key_name: string;
+  is_valid: number;
+  created_at: string;
+}
+
 // --- Middleware: Auth ---
 const authenticate = (req: AuthRequest, res: Response, next: NextFunction) => {
   const token = req.headers.authorization?.split(" ")[1];
@@ -121,7 +129,7 @@ app.get("/api/keys", authenticate, (req: AuthRequest, res: Response) => {
   db.all(
     "SELECT id, provider, key_name, is_valid, created_at FROM api_keys WHERE user_id = ? ORDER BY created_at DESC",
     [req.user!.id],
-    (err, rows: any[]) => {
+    (err, rows: ApiKeyRow[]) => {
       if (err) return res.status(500).json({ error: "DB Fehler" });
       res.json(rows);
     },
