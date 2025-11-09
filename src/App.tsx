@@ -1,5 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type KeyboardEvent, type AnchorHTMLAttributes, type HTMLAttributes } from 'react';
 import { Send, Key, MessageSquare, Trash2, Plus } from 'lucide-react';
+import ReactMarkdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 // Types
 interface ApiKey {
@@ -8,7 +10,45 @@ interface ApiKey {
     key_name: string;
     is_valid: number;
     created_at: string;
+    total_prompt_tokens: number;
+    total_completion_tokens: number;
 }
+
+
+const markdownComponents: Components = {
+    a: ({ children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) => (
+        <a
+            {...props}
+            target="_blank"
+            rel="noreferrer"
+            className="underline text-blue-300 hover:text-blue-200"
+        >
+            {children}
+        </a>
+    ),
+    p: ({ children, className, ...props }: HTMLAttributes<HTMLParagraphElement>) => (
+        <p {...props} className={`${className ?? ''} m-0`}>
+            {children}
+        </p>
+    ),
+};
+
+interface MarkdownRendererProps {
+    content: string;
+    className?: string;
+}
+
+const MarkdownRenderer = ({ content, className }: MarkdownRendererProps) => (
+    <div className={className}>
+        <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={markdownComponents}
+            //linkTarget="_blank"
+        >
+            {content}
+        </ReactMarkdown>
+    </div>
+);
 
 interface Message {
     role: 'user' | 'assistant';
@@ -58,6 +98,15 @@ export default function LLMKeyManager() {
     const headers = () => ({
         'Content-Type': 'application/json'
     });
+
+    const formatTokens = (value?: number) => (value ?? 0).toLocaleString();
+
+    const handleInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            sendMessage();
+        }
+    };
 
     // Key management
     const loadKeys = async () => {
@@ -304,6 +353,16 @@ export default function LLMKeyManager() {
                                                     <h3 className="text-xl font-semibold text-white">{key.key_name}</h3>
                                                 </div>
                                                 <p className="text-gray-400 capitalize">{key.provider}</p>
+                                                <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700/60">
+                                                        <p className="text-xs uppercase tracking-wide text-gray-500">Input tokens</p>
+                                                        <p className="mt-1 text-2xl font-semibold text-white">{formatTokens(key.total_prompt_tokens)}</p>
+                                                    </div>
+                                                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700/60">
+                                                        <p className="text-xs uppercase tracking-wide text-gray-500">Output tokens</p>
+                                                        <p className="mt-1 text-2xl font-semibold text-white">{formatTokens(key.total_completion_tokens)}</p>
+                                                    </div>
+                                                </div>
                                             </div>
                                             <div className="flex gap-2">
                                                 <button
@@ -367,7 +426,10 @@ export default function LLMKeyManager() {
                                                 ? 'bg-blue-600 text-white'
                                                 : 'bg-gray-800 text-white border border-gray-700'
                                         }`}>
-                                            <p className="whitespace-pre-wrap">{msg.content}</p>
+                                            <MarkdownRenderer
+                                                content={msg.content}
+                                                className="whitespace-pre-wrap break-words text-white"
+                                            />
                                         </div>
                                     </div>
                                 ))}
@@ -383,23 +445,38 @@ export default function LLMKeyManager() {
                         </div>
 
                         <div className="border-t border-gray-700 p-4 bg-gray-800">
-                            <div className="max-w-4xl mx-auto flex gap-4">
-                                <input
-                                    type="text"
-                                    value={input}
-                                    onChange={(e) => setInput(e.target.value)}
-                                    onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()}
-                                    placeholder="Type your message..."
-                                    disabled={isLoading}
-                                    className="flex-1 px-4 py-3 bg-gray-700 text-white rounded-lg border border-gray-600 focus:border-blue-500 focus:outline-none disabled:opacity-50"
-                                />
-                                <button
-                                    onClick={sendMessage}
-                                    disabled={isLoading || !input.trim()}
-                                    className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    <Send className="w-5 h-5" />
-                                </button>
+                            <div className="max-w-4xl mx-auto space-y-3">
+                                <div className="flex gap-4">
+                                    <textarea
+                                        rows={3}
+                                        value={input}
+                                        onChange={(e) => setInput(e.target.value)}
+                                        onKeyDown={handleInputKeyDown}
+                                        placeholder="Type your message..."
+                                        disabled={isLoading}
+                                        className="flex-1 min-h-[96px] resize-none px-4 py-3 bg-gray-700 text-white rounded-lg border border-gray-600 focus:border-blue-500 focus:outline-none disabled:opacity-50"
+                                    />
+                                    <button
+                                        onClick={sendMessage}
+                                        disabled={isLoading || !input.trim()}
+                                        className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        <Send className="w-5 h-5" />
+                                    </button>
+                                </div>
+                                <div className="rounded-2xl border border-gray-700/80 bg-gray-900/50 px-4 py-3">
+                                    <p className="text-xs uppercase tracking-wide text-gray-500">Markdown preview</p>
+                                    <div className="mt-2 max-h-40 overflow-y-auto text-sm text-white">
+                                        {input.trim() ? (
+                                            <MarkdownRenderer
+                                                content={input}
+                                                className="whitespace-pre-wrap break-words text-white"
+                                            />
+                                        ) : (
+                                            <p className="text-gray-500 m-0">Start typing markdown to preview your message.</p>
+                                        )}
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </>

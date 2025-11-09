@@ -45,9 +45,22 @@ db.serialize(() => {
       key_name TEXT NOT NULL,
       encrypted_key TEXT NOT NULL,
       is_valid INTEGER DEFAULT 0 CHECK (is_valid IN (0,1)),
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      total_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+      total_completion_tokens INTEGER NOT NULL DEFAULT 0
     )
   `);
+
+    const ensureColumn = (column: string, definition: string) => {
+        db.run(`ALTER TABLE api_keys ADD COLUMN ${column} ${definition}`, (err) => {
+            if (err && !/duplicate column name/i.test(err.message ?? "")) {
+                console.error(`Failed to add column ${column}:`, err.message);
+            }
+        });
+    };
+
+    ensureColumn("total_prompt_tokens", "INTEGER NOT NULL DEFAULT 0");
+    ensureColumn("total_completion_tokens", "INTEGER NOT NULL DEFAULT 0");
 });
 
 // --- Types ---
@@ -59,9 +72,16 @@ interface ApiKeyRow {
     key_name: string;
     is_valid: number;
     created_at: string;
+    total_prompt_tokens: number;
+    total_completion_tokens: number;
 }
 
 type StatementParams = readonly unknown[];
+
+interface TokenUsage {
+    promptTokens: number;
+    completionTokens: number;
+}
 
 const runStatement = (sql: string, params: StatementParams = []) =>
     new Promise<sqlite3.RunResult>((resolve, reject) => {
@@ -96,11 +116,76 @@ const allStatements = <T>(sql: string, params: StatementParams = []) =>
         });
     });
 
+const firstValidNumber = (...values: unknown[]): number => {
+    for (const value of values) {
+        if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+            return value;
+        }
+        if (typeof value === "string") {
+            const parsed = Number.parseFloat(value);
+            if (Number.isFinite(parsed) && parsed >= 0) {
+                return parsed;
+            }
+        }
+    }
+    return 0;
+};
+
+const extractUsageFromPayload = (payload: unknown): TokenUsage => {
+    if (!payload || typeof payload !== "object") {
+        return { promptTokens: 0, completionTokens: 0 };
+    }
+
+    const payloadObj = payload as Record<string, unknown>;
+    const usageSource =
+        payloadObj["usage"] && typeof payloadObj["usage"] === "object"
+            ? (payloadObj["usage"] as Record<string, unknown>)
+            : payloadObj;
+
+    const promptTokens = firstValidNumber(
+        usageSource["prompt_tokens"],
+        usageSource["promptTokens"],
+        usageSource["input_tokens"],
+        usageSource["inputTokens"],
+        usageSource["tokens_in"],
+        usageSource["tokensIn"],
+    );
+    const completionTokens = firstValidNumber(
+        usageSource["completion_tokens"],
+        usageSource["completionTokens"],
+        usageSource["output_tokens"],
+        usageSource["outputTokens"],
+        usageSource["tokens_out"],
+        usageSource["tokensOut"],
+        usageSource["generated_tokens"],
+        usageSource["generatedTokens"],
+    );
+
+    return {
+        promptTokens,
+        completionTokens,
+    };
+};
+
+const incrementTokenUsage = async (keyId: number, usage: TokenUsage) => {
+    const promptTokens = usage.promptTokens ?? 0;
+    const completionTokens = usage.completionTokens ?? 0;
+
+    if (promptTokens === 0 && completionTokens === 0) {
+        return;
+    }
+
+    await runStatement(
+        "UPDATE api_keys SET total_prompt_tokens = total_prompt_tokens + ?, total_completion_tokens = total_completion_tokens + ? WHERE id = ?",
+        [promptTokens, completionTokens, keyId],
+    );
+};
+
 // --- Routes ---
 app.get("/api/keys", async (req: Request, res: Response) => {
     try {
         const rows = await allStatements<ApiKeyRow>(
-            "SELECT id, provider, key_name, is_valid, created_at FROM api_keys ORDER BY created_at DESC",
+            "SELECT id, provider, key_name, is_valid, created_at, total_prompt_tokens, total_completion_tokens FROM api_keys ORDER BY created_at DESC",
             [],
         );
         res.json(rows);
@@ -219,18 +304,37 @@ app.post("/api/keys/:id/test", async (req: Request, res: Response) => {
                 }),
             });
 
+            const responseText = await response.text();
+            let responseBody: unknown;
+            try {
+                responseBody = responseText ? JSON.parse(responseText) : undefined;
+            } catch {
+                responseBody = undefined;
+            }
+
             valid = response.ok;
             if (!valid) {
-                try {
-                    const body = (await response.json()) as {
-                        error?: { message?: string };
-                    };
-                    message = body.error?.message ?? message;
-                } catch {
+                const bodyRecord =
+                    responseBody && typeof responseBody === "object"
+                        ? (responseBody as Record<string, unknown>)
+                        : undefined;
+                const errorRecord =
+                    bodyRecord?.["error"] && typeof bodyRecord["error"] === "object"
+                        ? (bodyRecord["error"] as Record<string, unknown>)
+                        : undefined;
+
+                if (errorRecord && typeof errorRecord["message"] === "string") {
+                    message = errorRecord["message"] as string;
+                } else {
                     message = response.statusText || message;
                 }
             } else {
                 message = "Success!";
+                if (responseBody) {
+                    incrementTokenUsage(id, extractUsageFromPayload(responseBody)).catch((usageError) => {
+                        console.error("Failed to store token usage (test):", usageError);
+                    });
+                }
             }
         } catch (error) {
             console.error("API test failed:", error);
@@ -338,9 +442,14 @@ app.post("/api/chat", async (req: Request, res: Response) => {
 
             const data = await response.json() as {
                 choices?: Array<{ message?: { content?: string } }>;
+                usage?: Record<string, unknown>;
             };
 
             const content = data.choices?.[0]?.message?.content || "No response";
+
+            incrementTokenUsage(keyId, extractUsageFromPayload(data.usage ?? data)).catch((usageError) => {
+                console.error("Failed to store token usage:", usageError);
+            });
 
             res.json({ content });
         } catch (error) {
