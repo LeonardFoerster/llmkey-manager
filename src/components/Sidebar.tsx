@@ -1,5 +1,3 @@
-import { Key, MessageSquare, Plus, Trash2 } from 'lucide-react';
-import type { ReactNode } from 'react';
 import type { ChatSession } from '../types';
 import { formatTokens } from '../utils/format';
 
@@ -29,145 +27,96 @@ const Sidebar = ({
     onDeleteSession,
     validatedKeysCount,
     totalTokensUsed,
-}: SidebarProps) => (
-    <aside className="flex h-full w-full flex-col gap-5 overflow-hidden rounded-3xl border border-gray-200 bg-gradient-to-b from-[#f7f8ff] via-[#f4f5fb] to-[#fef6ff] p-5 shadow-[0_35px_60px_rgba(15,23,42,0.08)] lg:w-80 lg:min-h-[calc(100vh-3rem)]">
-        <div className="hover-lift rounded-2xl border border-[#e0e7ff] bg-white/90 p-4 shadow-[0_18px_35px_rgba(79,70,229,0.08)]">
-            <div className="flex items-center justify-between gap-3">
-                <div>
-                    <p className="text-xs uppercase tracking-[0.3em] text-gray-500">Command center</p>
-                    <h1 className="text-2xl font-semibold text-gray-900">Key Control</h1>
-                </div>
-                <div className="rounded-2xl bg-[#eef2ff] p-3 text-[#4c1d95]">
-                    <MessageSquare className="h-6 w-6" />
-                </div>
+    }: SidebarProps) => (
+    <aside className="panel-shell flex h-full min-h-0 w-full flex-col p-4 text-sm text-neutral-100 lg:w-72">
+        <div className="space-y-2 border-b border-white/15 pb-4">
+            <p className="text-bracket text-[0.65rem] text-neutral-400">status</p>
+            <div className="font-mono text-xs text-neutral-300">
+                <p>validated_keys: {validatedKeysCount}</p>
+                <p>tokens_recorded: {formatTokens(totalTokensUsed)}</p>
+                <p>threads_open: {sessions.length}</p>
             </div>
-            <div className="mt-4 grid grid-cols-2 gap-3 text-xs uppercase tracking-[0.2em] text-gray-500">
-                <div className="accent-chip rounded-2xl px-3 py-4">
-                    <p>Validated</p>
-                    <p className="mt-1 text-2xl font-semibold text-gray-900">{validatedKeysCount}</p>
-                </div>
-                <div className="accent-chip rounded-2xl px-3 py-4">
-                    <p>Tokens</p>
-                    <p className="mt-1 text-lg font-semibold text-gray-900">{formatTokens(totalTokensUsed)}</p>
-                </div>
-            </div>
-        </div>
-
-        <div className="rounded-2xl border border-gray-200 bg-white/80 p-4 text-xs font-semibold uppercase tracking-[0.3em] text-gray-600 shadow-sm">
-            <p className="mb-3 text-[0.65rem] text-gray-400">Workspace</p>
-            <div className="flex flex-col gap-2">
-                <SidebarButton
-                    active={view === 'keys'}
-                    label="Key overview"
-                    icon={<Key className="h-4 w-4" />}
-                    badge={view === 'keys' ? 'Active' : ''}
-                    onClick={() => onChangeView('keys')}
-                />
+            <div className="flex flex-col gap-2 pt-2">
                 <button
+                    type="button"
                     onClick={() => {
                         onChangeView('chat');
                         onNewChat();
                     }}
-                    className="hover-lift flex items-center justify-between rounded-2xl border border-transparent bg-gradient-to-r from-[#e0f2ff] to-[#fce7ff] px-4 py-2 text-sm text-gray-800 shadow-[0_12px_30px_rgba(14,165,233,0.15)] transition"
+                    className="text-left text-bracket text-xs text-neutral-200 transition hover:text-white hover:opacity-80"
                 >
-                    <span className="flex items-center gap-2">
-                        <Plus className="h-4 w-4" />
-                        New chat
-                    </span>
-                    <span className="text-[0.6rem]">⇧N</span>
+                    [ New Chat ]
                 </button>
-                <SidebarButton
-                    active={view === 'analytics'}
-                    label="Analytics"
-                    badge={view === 'analytics' ? 'Active' : ''}
-                    onClick={() => onChangeView('analytics')}
-                />
                 <button
-                    onClick={onAddKey}
-                    className="hover-lift flex items-center justify-between rounded-2xl border border-dashed border-[#c4b5fd] bg-[#f7f3ff] px-4 py-2 text-sm text-[#553c9a] transition hover:border-[#a855f7] hover:bg-[#f2e9ff]"
+                    type="button"
+                    onClick={() => onChangeView('keys')}
+                    className={`text-left text-bracket text-xs transition ${
+                        view === 'keys' ? 'text-white' : 'text-neutral-400 hover:text-neutral-100'
+                    }`}
                 >
-                    <span>Add key</span>
-                    <span className="text-[0.6rem]">+</span>
+                    [ Keys ]
+                </button>
+                <button
+                    type="button"
+                    onClick={() => onChangeView('analytics')}
+                    className={`text-left text-bracket text-xs transition ${
+                        view === 'analytics' ? 'text-white' : 'text-neutral-400 hover:text-neutral-100'
+                    }`}
+                >
+                    [ Analytics ]
+                </button>
+                <button
+                    type="button"
+                    onClick={onAddKey}
+                    className="text-left text-bracket text-xs text-neutral-400 transition hover:text-neutral-100"
+                >
+                    [ Add Key ]
                 </button>
             </div>
         </div>
 
-        <div className="flex flex-1 flex-col gap-4 overflow-hidden">
-            <div className="flex items-center justify-between text-xs uppercase tracking-[0.3em] text-gray-500">
-                <p>Chat history</p>
-                <span className="text-[0.6rem] text-gray-400">{sessions.length} threads</span>
+        <div className="mt-4 flex flex-1 min-h-0 flex-col space-y-2">
+            <div className="flex items-center justify-between text-[0.65rem] text-neutral-400">
+                <span className="text-bracket">history</span>
+                <span>{sessions.length} entries</span>
             </div>
-            <div className="flex-1 overflow-y-auto rounded-2xl border border-gray-200 bg-white/70 p-3 shadow-inner">
-                <div className="space-y-2">
-                    {sessions.map(session => (
+            <div className="flex-1 space-y-2 overflow-y-auto pr-1">
+                {sessions.map(session => {
+                    const createdAt = session.messages[0]?.timestamp ?? Number(session.id);
+                    return (
                         <div
                             key={session.id}
-                            onClick={() => onSelectSession(session.id)}
-                            className={`hover-lift group flex cursor-pointer items-center justify-between rounded-2xl border px-4 py-3 text-sm transition ${
-                                activeSession === session.id
-                                    ? 'border-transparent bg-gradient-to-r from-[#4338ca] to-[#6d28d9] text-white shadow-lg shadow-purple-600/40'
-                                    : 'border-gray-200 bg-white text-gray-800 hover:border-[#c4b5fd] hover:bg-[#f8f7ff]'
+                            className={`border border-white/15 px-3 py-2 transition ${
+                                activeSession === session.id ? 'bg-white/15 text-white' : 'bg-transparent hover:bg-white/10'
                             }`}
                         >
-                            <div className="flex-1 overflow-hidden">
-                                <p className={`truncate font-semibold ${activeSession === session.id ? 'text-white' : 'text-gray-900'}`}>
-                                    {session.title}
-                                </p>
-                                <p className={`text-xs ${activeSession === session.id ? 'text-gray-100' : 'text-gray-500'}`}>
+                            <button
+                                type="button"
+                                className="w-full text-left"
+                                onClick={() => onSelectSession(session.id)}
+                            >
+                                <p className="truncate font-mono text-sm text-neutral-100">{session.title}</p>
+                                    <p className="text-xs text-neutral-400">
                                     {session.provider} · {session.model}
                                 </p>
-                            </div>
-                            <button
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    onDeleteSession(session.id);
-                                }}
-                                className={`rounded-full p-2 text-xs transition ${
-                                    activeSession === session.id
-                                        ? 'text-white hover:bg-white/20'
-                                        : 'text-gray-500 hover:bg-gray-200 hover:text-gray-900'
-                                }`}
-                            >
-                                <Trash2 className="h-4 w-4" />
                             </button>
+                                <div className="mt-1 flex items-center justify-between text-[0.65rem] text-neutral-400">
+                                <span>{createdAt ? new Date(createdAt).toLocaleDateString() : '—'}</span>
+                                <button
+                                    type="button"
+                                    onClick={() => onDeleteSession(session.id)}
+                                    className="text-bracket text-xs text-neutral-500 transition hover:text-red-400"
+                                >
+                                    [ delete ]
+                                </button>
+                            </div>
                         </div>
-                    ))}
-                    {sessions.length === 0 && (
-                        <p className="text-xs text-gray-500">No chats yet. Start a new one.</p>
-                    )}
-                </div>
+                    );
+                })}
+                {sessions.length === 0 && <p className="text-xs text-neutral-500">no threads yet</p>}
             </div>
         </div>
     </aside>
-);
-
-const SidebarButton = ({
-    active,
-    label,
-    icon,
-    badge,
-    onClick,
-}: {
-    active: boolean;
-    label: string;
-    icon?: ReactNode;
-    badge?: string;
-    onClick: () => void;
-}) => (
-    <button
-        onClick={onClick}
-        className={`flex items-center justify-between rounded-2xl px-4 py-2 text-sm transition ${
-            active
-                ? 'btn-accent hover-lift shadow-lg shadow-purple-500/30'
-                : 'border border-gray-200 bg-gray-100 text-gray-700 hover:border-[#c7d2fe] hover:bg-[#fbfbff]'
-        }`}
-    >
-        <span className="flex items-center gap-2">
-            {icon}
-            {label}
-        </span>
-        <span className={`text-[0.6rem] ${active ? 'text-white/80' : 'text-gray-500'}`}>{badge}</span>
-    </button>
 );
 
 export default Sidebar;

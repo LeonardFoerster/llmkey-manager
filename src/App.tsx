@@ -4,6 +4,8 @@ import KeyStudio from './components/KeyStudio';
 import AnalyticsPanel from './components/AnalyticsPanel';
 import ChatPanel from './components/ChatPanel';
 import AddKeyModal from './components/AddKeyModal';
+import PlexusBackground from './components/PlexusBackground';
+import BackgroundBeamsLayer from './components/BackgroundBeamsLayer';
 import type { ApiKey, ProviderOption, ChatSession, Message, AnalyticsData } from './types';
 
 const API_URL = 'http://localhost:5000/api';
@@ -24,9 +26,6 @@ interface AnalyticsSnapshot {
 }
 
 const SNAPSHOT_STORAGE_KEY = 'analyticsSnapshotCache';
-
-const DAILY_VOLUME_MAX = 1_000_000;
-const DAILY_VOLUME_TICKS = [1_000_000, 100_000, 10_000, 1_000];
 
 type NewKeyFormState = {
     provider: ProviderOption;
@@ -367,13 +366,6 @@ export default function LLMKeyManager() {
         0
     );
 
-    const providerMaxCost = analyticsData?.usageByProvider?.length
-        ? Math.max(...analyticsData.usageByProvider.map(item => item.cost), 1)
-        : 1;
-    const providerMaxTokens = analyticsData?.usageByProvider?.length
-        ? Math.max(...analyticsData.usageByProvider.map(item => item.promptTokens + item.completionTokens), 1)
-        : 1;
-
     const manualTokenTotals = analyticsData?.usageByProvider?.reduce(
         (acc, provider) => {
             acc.prompt += provider.promptTokens;
@@ -389,73 +381,121 @@ export default function LLMKeyManager() {
     const estimatedCostValue = costMode === 'auto' ? analyticsData?.totalCost ?? 0 : manualCostEstimate;
     const currentSession = sessions.find(s => s.id === activeSession) ?? null;
 
+    const navItems = [
+        { id: 'chat', label: '[ Nexus ]', action: () => setView('chat') },
+        { id: 'keys', label: '[ Models ]', action: () => setView('keys') },
+        { id: 'analytics', label: '[ Agents ]', action: () => setView('analytics') },
+    ] as const;
+
     return (
-        <div className="min-h-screen w-full bg-gradient-to-br from-[#f9fafc] via-[#eef1f7] to-[#e3e8f2] text-gray-900">
-            <div className="flex min-h-[calc(100vh-3rem)] w-full flex-col gap-6 px-4 py-4 lg:flex-row">
-                <Sidebar
-                    view={view}
-                    onChangeView={setView}
-                    onNewChat={createSession}
-                    onAddKey={() => setShowAddKey(true)}
-                    sessions={sessions}
-                    activeSession={activeSession}
-                    onSelectSession={(id) => {
-                        setActiveSession(id);
-                        setView('chat');
-                    }}
-                    onDeleteSession={deleteSession}
-                    validatedKeysCount={validatedKeysCount}
-                    totalTokensUsed={totalTokensUsed}
-                />
+        <div className="relative h-screen w-full overflow-hidden bg-[#0b0d12] text-neutral-100">
+            <PlexusBackground />
+            <div className="lightning-overlay" aria-hidden="true" />
+            <BackgroundBeamsLayer />
+            <div className="relative z-10 flex h-full w-full flex-col gap-6 px-4 py-6 lg:px-10">
+                <header className="panel-shell panel-shell--tight px-4 py-3">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div className="flex flex-col gap-1">
+                            <p className="text-bracket text-[0.6rem] text-neutral-400">NEXUS</p>
+                            <p className="text-xs text-neutral-500">LLM control surface</p>
+                        </div>
+                        <nav className="flex flex-wrap items-center gap-3 text-xs text-neutral-400">
+                            {navItems.map(item => (
+                                <button
+                                    key={item.id}
+                                    type="button"
+                                    onClick={() => {
+                                        item.action();
+                                        if (item.id === 'chat' && sessions.length === 0) {
+                                            setActiveSession(null);
+                                        }
+                                    }}
+                                    className={`text-bracket transition ${
+                                        view === item.id ? 'text-neutral-100' : 'hover:text-neutral-200 hover:opacity-80'
+                                    }`}
+                                >
+                                    {item.label}
+                                </button>
+                            ))}
+                            <button
+                                type="button"
+                                onClick={() => setShowAddKey(true)}
+                                className="text-bracket text-neutral-500 transition hover:text-neutral-100 hover:opacity-80"
+                            >
+                                [ Config ]
+                            </button>
+                        </nav>
+                    </div>
+                </header>
 
-                <section className="flex w-full flex-1 flex-col gap-5 lg:min-h-[calc(100vh-3rem)]">
-                    {view === 'keys' && (
-                        <KeyStudio
-                            apiKeys={apiKeys}
-                            onTestKey={testKey}
-                            onDeleteKey={deleteKey}
-                            onShowAddKey={() => setShowAddKey(true)}
-                            onUpdateKeyMeta={updateKeyMeta}
-                        />
-                    )}
+                <div className="flex flex-1 min-h-0 flex-col gap-6 lg:flex-row">
+                    <Sidebar
+                        view={view}
+                        onChangeView={setView}
+                        onNewChat={createSession}
+                        onAddKey={() => setShowAddKey(true)}
+                        sessions={sessions}
+                        activeSession={activeSession}
+                        onSelectSession={(id) => {
+                            setActiveSession(id);
+                            setView('chat');
+                        }}
+                        onDeleteSession={deleteSession}
+                        validatedKeysCount={validatedKeysCount}
+                        totalTokensUsed={totalTokensUsed}
+                    />
 
-                    {view === 'analytics' && (
-                        <AnalyticsPanel
-                            analyticsData={analyticsData}
-                            isLoading={isAnalyticsLoading}
-                            error={analyticsError}
-                            costMode={costMode}
-                            manualRates={manualRates}
-                            onManualRateChange={setManualRates}
-                            onCostModeChange={setCostMode}
-                            showCostSettings={showCostSettings}
-                            onToggleCostSettings={() => setShowCostSettings(prev => !prev)}
-                            estimatedCostValue={estimatedCostValue}
-                            providerMaxCost={providerMaxCost}
-                            providerMaxTokens={providerMaxTokens}
-                            dailyVolumeMax={DAILY_VOLUME_MAX}
-                            dailyVolumeTicks={DAILY_VOLUME_TICKS}
-                            snapshot={analyticsSnapshot}
-                        />
-                    )}
+                    <section className="flex w-full flex-1 min-h-0 flex-col">
+                        {view === 'keys' && (
+                            <div className="flex flex-1 min-h-0">
+                                <KeyStudio
+                                    apiKeys={apiKeys}
+                                    onTestKey={testKey}
+                                    onDeleteKey={deleteKey}
+                                    onShowAddKey={() => setShowAddKey(true)}
+                                    onUpdateKeyMeta={updateKeyMeta}
+                                />
+                            </div>
+                        )}
 
-                    {view === 'chat' && (
-                        <ChatPanel
-                            currentSession={currentSession}
-                            modeMap={MODELS}
-                            onUpdateSession={handleUpdateSession}
-                            input={input}
-                            onInputChange={setInput}
-                            onInputKeyDown={handleInputKeyDown}
-                            onSendMessage={sendMessage}
-                            onStopResponse={stopResponse}
-                            isLoading={isLoading}
-                            messagesEndRef={messagesEndRef}
-                            validatedKeys={validatedKeys}
-                            onSelectKey={handleSelectKey}
-                        />
-                    )}
-                </section>
+                        {view === 'analytics' && (
+                            <div className="flex flex-1 min-h-0">
+                                <AnalyticsPanel
+                                    analyticsData={analyticsData}
+                                    isLoading={isAnalyticsLoading}
+                                    error={analyticsError}
+                                    costMode={costMode}
+                                    manualRates={manualRates}
+                                    onManualRateChange={setManualRates}
+                                    onCostModeChange={setCostMode}
+                                    showCostSettings={showCostSettings}
+                                    onToggleCostSettings={() => setShowCostSettings(prev => !prev)}
+                                    estimatedCostValue={estimatedCostValue}
+                                    snapshot={analyticsSnapshot}
+                                />
+                            </div>
+                        )}
+
+                        {view === 'chat' && (
+                            <div className="flex flex-1 min-h-0">
+                                <ChatPanel
+                                    currentSession={currentSession}
+                                    modeMap={MODELS}
+                                    onUpdateSession={handleUpdateSession}
+                                    input={input}
+                                    onInputChange={setInput}
+                                    onInputKeyDown={handleInputKeyDown}
+                                    onSendMessage={sendMessage}
+                                    onStopResponse={stopResponse}
+                                    isLoading={isLoading}
+                                    messagesEndRef={messagesEndRef}
+                                    validatedKeys={validatedKeys}
+                                    onSelectKey={handleSelectKey}
+                                />
+                            </div>
+                        )}
+                    </section>
+                </div>
             </div>
 
             <AddKeyModal

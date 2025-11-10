@@ -31,26 +31,35 @@ const markdownComponents: Components = {
             {...props}
             target="_blank"
             rel="noreferrer"
-            className="underline text-gray-600 hover:text-gray-900"
+            className="text-neutral-100 underline decoration-neutral-700 underline-offset-4 hover:text-white"
         >
             {children}
         </a>
     ),
     p: ({ children, className, ...props }: HTMLAttributes<HTMLParagraphElement>) => (
-        <p {...props} className={`${className ?? ''} m-0`}>
+        <p {...props} className={`${className ?? ''} m-0 text-neutral-100`}>
             {children}
         </p>
+    ),
+    code: ({ children, className, ...props }: HTMLAttributes<HTMLElement>) => (
+        <code
+            {...props}
+            className={`${className ?? ''} rounded bg-white/10 px-1 py-0.5 text-neutral-100`}
+        >
+            {children}
+        </code>
     ),
 };
 
 export interface MarkdownRendererProps {
     content: string;
     className?: string;
+    components?: Components;
 }
 
-export const MarkdownRenderer = ({ content, className }: MarkdownRendererProps) => (
+export const MarkdownRenderer = ({ content, className, components }: MarkdownRendererProps) => (
     <div className={className}>
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={components ?? markdownComponents}>
             {content}
         </ReactMarkdown>
     </div>

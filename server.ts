@@ -329,10 +329,24 @@ db.serialize(() => {
       prompt_tokens INTEGER NOT NULL DEFAULT 0,
       completion_tokens INTEGER NOT NULL DEFAULT 0,
       event_type TEXT DEFAULT 'chat',
+      latency_ms INTEGER,
+      status TEXT DEFAULT 'success',
       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(key_id) REFERENCES api_keys(id)
     )
   `);
+
+    const ensureUsageColumn = (column: string, definition: string) => {
+        db.run(`ALTER TABLE usage_events ADD COLUMN ${column} ${definition}`, (err) => {
+            if (err && !/duplicate column name/i.test(err.message ?? "")) {
+                console.error(`Failed to add usage_events column ${column}:`, err.message);
+            }
+        });
+    };
+
+    ensureUsageColumn("latency_ms", "INTEGER");
+    ensureUsageColumn("status", "TEXT DEFAULT 'success'");
+    db.run("UPDATE usage_events SET status = 'success' WHERE status IS NULL", () => {});
 });
 
 const migrateProviderConstraint = () => {
@@ -482,10 +496,18 @@ const extractUsageFromPayload = (payload: unknown): TokenUsage => {
     };
 };
 
-const logUsageEvent = async (keyId: number, provider: Provider, model: string, usage: TokenUsage, eventType: string) => {
+const logUsageEvent = async (
+    keyId: number,
+    provider: Provider,
+    model: string,
+    usage: TokenUsage,
+    eventType: string,
+    latencyMs?: number | null,
+    status: "success" | "error" = "success",
+) => {
     await runStatement(
-        "INSERT INTO usage_events (key_id, provider, model, prompt_tokens, completion_tokens, event_type) VALUES (?, ?, ?, ?, ?, ?)",
-        [keyId, provider, model, usage.promptTokens ?? 0, usage.completionTokens ?? 0, eventType],
+        "INSERT INTO usage_events (key_id, provider, model, prompt_tokens, completion_tokens, event_type, latency_ms, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [keyId, provider, model, usage.promptTokens ?? 0, usage.completionTokens ?? 0, eventType, latencyMs ?? null, status],
     );
 };
 
@@ -495,20 +517,19 @@ const incrementTokenUsage = async (
     model: string,
     usage: TokenUsage,
     eventType: "chat" | "test" = "chat",
+    latencyMs?: number,
 ) => {
     const promptTokens = usage.promptTokens ?? 0;
     const completionTokens = usage.completionTokens ?? 0;
 
-    if (promptTokens === 0 && completionTokens === 0) {
-        return;
+    if (promptTokens !== 0 || completionTokens !== 0) {
+        await runStatement(
+            "UPDATE api_keys SET total_prompt_tokens = total_prompt_tokens + ?, total_completion_tokens = total_completion_tokens + ? WHERE id = ?",
+            [promptTokens, completionTokens, keyId],
+        );
     }
 
-    await runStatement(
-        "UPDATE api_keys SET total_prompt_tokens = total_prompt_tokens + ?, total_completion_tokens = total_completion_tokens + ? WHERE id = ?",
-        [promptTokens, completionTokens, keyId],
-    );
-
-    await logUsageEvent(keyId, provider, model, usage, eventType);
+    await logUsageEvent(keyId, provider, model, usage, eventType, latencyMs ?? null, "success");
 };
 
 // --- Routes ---
@@ -948,6 +969,7 @@ app.post("/api/keys/:id/test", async (req: Request, res: Response) => {
         let message = "Failed";
 
         try {
+            const requestStartedAt = Date.now();
             const response = await fetch(endpoint, {
                 method: "POST",
                 headers: buildHeaders(config, decrypted),
@@ -984,12 +1006,14 @@ app.post("/api/keys/:id/test", async (req: Request, res: Response) => {
                     message = "Success!";
                 }
                 if (responseBody) {
+                    const latencyMs = Date.now() - requestStartedAt;
                     incrementTokenUsage(
                         id,
                         row.provider,
                         modelForRequest,
                         extractUsageFromPayload(responseBody),
                         "test",
+                        latencyMs,
                     ).catch((usageError) => {
                         console.error("Failed to store token usage (test):", usageError);
                     });
@@ -1088,7 +1112,9 @@ app.post("/api/chat", async (req: Request, res: Response) => {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 30000); // 30 second timeout
 
+        let requestStartedAt: number | null = null;
         try {
+            requestStartedAt = Date.now();
             const payload = buildPayload(
                 config,
                 resolvedModel,
@@ -1123,6 +1149,17 @@ app.post("/api/chat", async (req: Request, res: Response) => {
                             ? bodyMessage
                             : rawBody || response.statusText || "API request failed";
 
+                const latencyMs = requestStartedAt ? Date.now() - requestStartedAt : null;
+                logUsageEvent(
+                    keyId,
+                    row.provider,
+                    resolvedModel,
+                    { promptTokens: 0, completionTokens: 0 },
+                    "chat",
+                    latencyMs,
+                    "error",
+                ).catch((logError) => console.error("Failed to log provider error event:", logError));
+
                 return res.status(response.status).json({
                     error: errorMessage,
                 });
@@ -1134,11 +1171,14 @@ app.post("/api/chat", async (req: Request, res: Response) => {
             const content = decodeResponseText(config, payloadRecord);
 
             const usageSource = payloadRecord["usage"] ?? payloadRecord;
+            const latencyMs = Date.now() - requestStartedAt;
             incrementTokenUsage(
                 keyId,
                 row.provider,
                 resolvedModel,
                 extractUsageFromPayload(usageSource),
+                "chat",
+                requestStartedAt ? Date.now() - requestStartedAt : undefined,
             ).catch((usageError) => {
                 console.error("Failed to store token usage:", usageError);
             });
@@ -1147,9 +1187,27 @@ app.post("/api/chat", async (req: Request, res: Response) => {
         } catch (error) {
             clearTimeout(timeout);
             if (error instanceof Error && error.name === "AbortError") {
+                logUsageEvent(
+                    keyId,
+                    row.provider,
+                    resolvedModel,
+                    { promptTokens: 0, completionTokens: 0 },
+                    "chat",
+                    requestStartedAt ? Date.now() - requestStartedAt : null,
+                    "error",
+                ).catch((logError) => console.error("Failed to log timeout event:", logError));
                 return res.status(408).json({ error: "Request timeout" });
             }
             console.error("Chat API error:", error);
+            logUsageEvent(
+                keyId,
+                row.provider,
+                resolvedModel,
+                { promptTokens: 0, completionTokens: 0 },
+                "chat",
+                requestStartedAt ? Date.now() - requestStartedAt : null,
+                "error",
+            ).catch((logError) => console.error("Failed to log error event:", logError));
             res.status(500).json({ error: "Failed to communicate with AI provider" });
         }
     } catch (error) {
@@ -1173,6 +1231,7 @@ app.get("/api/analytics", async (_req: Request, res: Response) => {
         }>(
             `SELECT provider, COALESCE(model, 'unknown') as model, SUM(prompt_tokens) as prompt_sum, SUM(completion_tokens) as completion_sum
              FROM usage_events
+             WHERE event_type = 'chat'
              GROUP BY provider, model
              ORDER BY SUM(prompt_tokens + completion_tokens) DESC`,
         );
@@ -1181,7 +1240,7 @@ app.get("/api/analytics", async (_req: Request, res: Response) => {
             total_prompt: number;
             total_completion: number;
         }>(
-            `SELECT SUM(prompt_tokens) as total_prompt, SUM(completion_tokens) as total_completion FROM usage_events`,
+            `SELECT SUM(prompt_tokens) as total_prompt, SUM(completion_tokens) as total_completion FROM usage_events WHERE event_type = 'chat'`,
         );
 
         const usageByTimeRows = await allStatements<{
@@ -1189,9 +1248,12 @@ app.get("/api/analytics", async (_req: Request, res: Response) => {
             tokens: number;
             prompt_sum: number;
             completion_sum: number;
+            request_count: number;
         }>(
             `SELECT DATE(timestamp) as day, SUM(prompt_tokens + completion_tokens) as tokens, SUM(prompt_tokens) as prompt_sum, SUM(completion_tokens) as completion_sum
+             , COUNT(*) as request_count
              FROM usage_events
+             WHERE event_type = 'chat'
              GROUP BY day
              ORDER BY day DESC
              LIMIT 31`,
@@ -1204,6 +1266,7 @@ app.get("/api/analytics", async (_req: Request, res: Response) => {
         }>(
             `SELECT provider, SUM(prompt_tokens) as prompt_sum, SUM(completion_tokens) as completion_sum
              FROM usage_events
+             WHERE event_type = 'chat'
              GROUP BY provider`,
         );
 
@@ -1226,6 +1289,90 @@ app.get("/api/analytics", async (_req: Request, res: Response) => {
             day: row.day,
             tokens: row.tokens,
             cost: calculateCost("openai", row.prompt_sum, row.completion_sum),
+            requests: row.request_count ?? 0,
+        }));
+
+        const usageByKeyRows = await allStatements<{
+            key_id: number | null;
+            key_name: string;
+            provider: Provider;
+            prompt_sum: number;
+            completion_sum: number;
+        }>(
+            `SELECT ue.key_id as key_id, COALESCE(k.key_name, 'Unknown') as key_name, COALESCE(k.provider, ue.provider) as provider,
+                    SUM(ue.prompt_tokens) as prompt_sum, SUM(ue.completion_tokens) as completion_sum
+             FROM usage_events ue
+             LEFT JOIN api_keys k ON ue.key_id = k.id
+             WHERE ue.event_type = 'chat' AND ue.key_id IS NOT NULL
+             GROUP BY ue.key_id
+             ORDER BY SUM(ue.prompt_tokens + ue.completion_tokens) DESC
+             LIMIT 8`,
+        );
+
+        const providerRequestRows = await allStatements<{
+            provider: Provider;
+            request_count: number;
+            success_count: number;
+            avg_latency: number | null;
+            avg_tokens: number | null;
+        }>(
+            `SELECT provider,
+                    COUNT(*) as request_count,
+                    SUM(CASE WHEN status = 'error' THEN 0 ELSE 1 END) as success_count,
+                    AVG(latency_ms) as avg_latency,
+                    AVG(prompt_tokens + completion_tokens) as avg_tokens
+             FROM usage_events
+             WHERE event_type = 'chat'
+             GROUP BY provider`,
+        );
+
+        const budgetUsageRows = await allStatements<{
+            key_id: number;
+            key_name: string;
+            provider: Provider;
+            token_budget: number;
+            used_tokens: number;
+        }>(
+            `SELECT k.id as key_id, k.key_name, k.provider, k.token_budget,
+                    COALESCE(SUM(ue.prompt_tokens + ue.completion_tokens), 0) as used_tokens
+             FROM api_keys k
+             LEFT JOIN usage_events ue ON ue.key_id = k.id AND ue.event_type = 'chat'
+             WHERE k.token_budget IS NOT NULL
+             GROUP BY k.id
+             ORDER BY used_tokens DESC
+             LIMIT 6`,
+        );
+
+        const usageByKey = usageByKeyRows
+            .filter(row => row.key_id != null)
+            .map(row => ({
+                keyId: row.key_id as number,
+                keyName: row.key_name,
+                provider: row.provider,
+                promptTokens: row.prompt_sum,
+                completionTokens: row.completion_sum,
+                cost: calculateCost(row.provider, row.prompt_sum, row.completion_sum),
+            }));
+
+        const providerRequestStats = providerRequestRows.map(row => {
+            const requestCount = row.request_count ?? 0;
+            const successRate = requestCount > 0 ? (row.success_count / requestCount) * 100 : 0;
+            return {
+                provider: row.provider,
+                requestCount,
+                successRate,
+                avgLatencyMs: row.avg_latency != null ? Math.round(row.avg_latency) : null,
+                tokensPerRequest: row.avg_tokens ?? 0,
+            };
+        });
+
+        const budgetUsage = budgetUsageRows.map(row => ({
+            keyId: row.key_id,
+            keyName: row.key_name,
+            provider: row.provider,
+            tokenBudget: row.token_budget,
+            tokensUsed: row.used_tokens ?? 0,
+            utilization: row.token_budget > 0 ? (row.used_tokens / row.token_budget) * 100 : 0,
         }));
 
         const totalPrompt = totalTokensRow[0]?.total_prompt ?? 0;
@@ -1239,6 +1386,9 @@ app.get("/api/analytics", async (_req: Request, res: Response) => {
             usageByProvider,
             usageByModel,
             usageByTime,
+            usageByKey,
+            providerRequestStats,
+            budgetUsage,
             lastUpdated: new Date().toLocaleString(),
         };
 

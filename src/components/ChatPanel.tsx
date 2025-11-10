@@ -1,7 +1,6 @@
-import { Send } from 'lucide-react';
 import type { ApiKey, ChatSession, ProviderOption } from '../types';
-import { MarkdownRenderer } from './MarkdownRenderer';
-import type { KeyboardEvent, RefObject } from 'react';
+import { MarkdownRenderer, AnimatedMessage } from './MarkdownRenderer';
+import { useCallback, useMemo, type KeyboardEvent, type RefObject } from 'react';
 
 interface ChatPanelProps {
     currentSession: ChatSession | null;
@@ -32,134 +31,156 @@ const ChatPanel = ({
     validatedKeys,
     onSelectKey,
 }: ChatPanelProps) => {
+    const handleAnimationProgress = useCallback(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messagesEndRef]);
+
+    const renderedMessages = useMemo(() => {
+        if (!currentSession) return null;
+        return currentSession.messages.map((msg, idx) => {
+            const isUser = msg.role === 'user';
+            const wrapperClass = isUser ? 'flex justify-end' : 'flex justify-start w-full';
+            const bubbleClass = isUser
+                ? 'inline-grid max-w-xl gap-2 rounded-2xl border border-white/15 bg-neutral-800/80 px-4 py-3 text-sm leading-relaxed text-neutral-50'
+                : 'grid w-full text-sm leading-relaxed text-neutral-100';
+
+            return (
+                <div key={`${msg.timestamp}-${idx}`} className={wrapperClass}>
+                    <div className={bubbleClass}>
+                        {isUser ? (
+                            <MarkdownRenderer
+                                content={msg.content}
+                                className="break-words leading-relaxed text-neutral-100"
+                            />
+                        ) : (
+                            <AnimatedMessage
+                                role="assistant"
+                                content={msg.content}
+                                className="break-words leading-relaxed text-neutral-100"
+                                onProgress={handleAnimationProgress}
+                            />
+                        )}
+                    </div>
+                </div>
+            );
+        });
+    }, [currentSession, handleAnimationProgress]);
+
     if (!currentSession) {
         return (
-            <div className="flex h-full flex-1 flex-col items-center justify-center gap-4 rounded-3xl border-2 border-dashed border-[#cbd5f5] bg-gradient-to-br from-[#f8fbff] to-[#fdf6ff] p-6 text-center text-gray-600">
-                <p className="text-lg font-semibold text-gray-900">No active chat</p>
-                <p className="text-sm text-gray-500">Select a chat on the left or start a new one.</p>
+            <div className="panel-shell flex h-full flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-neutral-400">
+                <p className="text-bracket text-xs uppercase tracking-[0.3em] text-neutral-500">no active chat</p>
+                <p className="text-sm text-neutral-400">Select a thread or spawn a new one from the left rail.</p>
             </div>
         );
     }
 
     return (
-        <div className="flex h-full flex-1 flex-col gap-4 rounded-3xl border border-gray-200 bg-white/95 p-6 shadow-[0_30px_70px_rgba(15,23,42,0.07)]">
-            <div className="flex flex-col gap-4 border-b border-gray-200 pb-4">
+        <div className="panel-shell flex h-full min-h-0 flex-1 flex-col gap-6 p-5 text-neutral-100">
+            <div className="flex flex-col gap-4 border-b border-white/15 pb-4">
                 <div className="flex flex-col gap-1">
-                    <h2 className="text-2xl font-semibold text-gray-900">{currentSession.title}</h2>
-                    <p className="text-sm text-gray-500 capitalize">
+                    <h2 className="font-mono text-lg text-neutral-100">{currentSession.title}</h2>
+                    <p className="text-xs uppercase text-neutral-500">
                         {currentSession.provider} · {currentSession.model}
                     </p>
                 </div>
-                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                    <div className="flex flex-col gap-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.3em] text-gray-500">API key</span>
-                        {validatedKeys.length > 1 ? (
-                            <select
-                                value={
-                                    typeof currentSession.keyId === 'number'
-                                        ? currentSession.keyId
-                                        : validatedKeys[0]?.id ?? ''
-                                }
-                                onChange={(e) => {
-                                    const nextId = Number(e.target.value);
-                                    if (!Number.isNaN(nextId)) {
-                                        onSelectKey(currentSession.id, nextId);
-                                    }
-                                }}
-                                className="rounded-2xl border border-gray-200 bg-white px-4 py-2 text-sm text-gray-900 outline-none transition focus:border-[#c7d2fe] focus:shadow-[0_0_0_3px_rgba(196,181,253,0.45)]"
-                            >
-                                {validatedKeys.map(key => (
-                                    <option key={key.id} value={key.id}>
-                                        {key.key_name} · {key.provider}
-                                    </option>
-                                ))}
-                            </select>
+                <div className="flex flex-col gap-4 text-sm text-neutral-400 md:flex-row md:items-start md:justify-between">
+                    <div className="flex flex-col gap-2">
+                        <span className="text-bracket text-[0.6rem] text-neutral-500">key</span>
+                        {validatedKeys.length === 0 ? (
+                            <span className="font-mono text-neutral-500">no validated keys</span>
                         ) : (
-                            <span className="text-sm text-gray-900">
-                                {validatedKeys[0]?.key_name ?? 'No validated keys'}
-                            </span>
+                            <div className="flex flex-wrap gap-2 text-[0.65rem]">
+                                {validatedKeys.map(key => (
+                                    <button
+                                        key={key.id}
+                                        type="button"
+                                        onClick={() => onSelectKey(currentSession.id, key.id)}
+                                        className={`text-bracket transition ${
+                                            currentSession.keyId === key.id
+                                                ? 'text-white'
+                                                : 'text-neutral-500 hover:text-neutral-200'
+                                        }`}
+                                    >
+                                        [{key.key_name}]
+                                    </button>
+                                ))}
+                            </div>
                         )}
                     </div>
-                    <div className="flex flex-col gap-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.3em] text-gray-500">Model</span>
-                        <select
-                            value={currentSession.model}
-                            onChange={(e) =>
-                                onUpdateSession(currentSession.id, session => ({ ...session, model: e.target.value }))
-                            }
-                            className="rounded-2xl border border-gray-200 bg-white px-4 py-2 text-sm text-gray-900 outline-none transition focus:border-[#c7d2fe] focus:shadow-[0_0_0_3px_rgba(196,181,253,0.45)]"
-                        >
+                    <div className="flex flex-col gap-2">
+                        <span className="text-bracket text-[0.6rem] text-neutral-500">model</span>
+                        <div className="flex flex-wrap gap-2 text-[0.65rem]">
                             {modeMap[currentSession.provider].map(model => (
-                                <option key={model} value={model}>
-                                    {model}
-                                </option>
+                                <button
+                                    key={model}
+                                    type="button"
+                                    onClick={() =>
+                                        onUpdateSession(currentSession.id, session => ({ ...session, model }))
+                                    }
+                                    className={`text-bracket transition ${
+                                        currentSession.model === model
+                                            ? 'text-white'
+                                            : 'text-neutral-500 hover:text-neutral-200'
+                                    }`}
+                                >
+                                    [{model}]
+                                </button>
                             ))}
-                        </select>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <div className="flex flex-1 flex-col gap-4 overflow-hidden">
-                <div className="flex flex-1 flex-col gap-4 overflow-y-auto pr-2 max-h-[calc(100vh-18rem)]">
-                    {currentSession.messages.map((msg, idx) => (
-                        <div
-                            key={`${msg.timestamp}-${idx}`}
-                            className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                        >
-                            <div
-                                className={`max-w-2xl rounded-3xl border px-6 py-4 text-sm shadow-sm ${
-                                    msg.role === 'user'
-                                        ? 'border-transparent bg-gradient-to-br from-[#eef2ff] to-white text-gray-900 shadow-[0_15px_35px_rgba(99,102,241,0.2)]'
-                                        : 'border border-[#e0e7ff] bg-white/90 text-gray-700'
-                                }`}
-                            >
-                                <MarkdownRenderer
-                                    content={msg.content}
-                                    className={`break-words leading-relaxed ${msg.role === 'assistant' ? 'text-gray-700 text-sm' : 'text-gray-900'}`}
-                                />
-                            </div>
-                        </div>
-                    ))}
+            <div className="flex flex-1 min-h-0 flex-col gap-4">
+                <div className="flex flex-1 min-h-0 flex-col gap-4 overflow-y-auto pr-2">
+                    {renderedMessages}
                     {isLoading && (
-                        <div className="flex justify-start">
-                            <div className="rounded-3xl border border-[#c7d2fe] bg-[#f7f3ff] px-6 py-4 text-sm text-[#4c1d95]">
-                                Thinking...
+                        <div className="flex flex-row gap-3 rounded-lg bg-white/5 p-3">
+                            <div className="h-12 w-12 animate-pulse rounded-xl bg-white/20" />
+                            <div className="flex flex-1 flex-col gap-2">
+                                <div className="h-4 w-40 animate-pulse rounded-lg bg-white/15" />
+                                <div className="h-3 w-56 animate-pulse rounded-lg bg-white/10" />
+                                <div className="h-2 w-48 animate-pulse rounded-lg bg-white/5" />
                             </div>
                         </div>
                     )}
                     <div ref={messagesEndRef} />
                 </div>
 
-                <div className="rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
-                    <div className="flex flex-col gap-4 md:flex-row">
-                        <div className="flex flex-1 flex-col gap-3">
-                            <textarea
-                                rows={3}
-                                value={input}
-                                onChange={(e) => onInputChange(e.target.value)}
-                                onKeyDown={onInputKeyDown}
-                                placeholder="Ask anything..."
-                                disabled={isLoading}
-                                className="min-h-[80px] resize-none rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-[#c7d2fe] focus:shadow-[0_0_0_3px_rgba(196,181,253,0.35)] disabled:opacity-60"
-                            />
-                        </div>
-                        <div className="flex items-center gap-2 md:flex-col md:justify-end">
+                <div className="border border-white/15 bg-neutral-900/70 p-4">
+                    <div className="flex flex-col gap-4">
+                        <textarea
+                            rows={2}
+                            value={input}
+                            onChange={(e) => onInputChange(e.target.value)}
+                            onKeyDown={onInputKeyDown}
+                            placeholder="type request and press Enter"
+                            disabled={isLoading}
+                            className="min-h-[52px] resize-none border border-white/15 bg-neutral-950/70 p-2 font-mono text-sm text-neutral-100 placeholder:text-neutral-500 disabled:opacity-50"
+                        />
+                        <div className="flex flex-wrap items-center gap-4 text-xs text-bracket">
+                            <button
+                                type="button"
+                                onClick={onSendMessage}
+                                disabled={isLoading || !input.trim()}
+                                className={`text-sm transition ${
+                                    isLoading || !input.trim()
+                                        ? 'text-neutral-700'
+                                        : 'text-neutral-200 hover:text-white hover:opacity-80'
+                                }`}
+                            >
+                                [ Submit ]
+                            </button>
                             {isLoading && (
                                 <button
                                     type="button"
                                     onClick={onStopResponse}
-                                    className="hover-lift rounded-2xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3 text-sm font-semibold text-[#9a3412] transition"
+                                    className="text-sm text-neutral-400 transition hover:text-white"
                                 >
-                                    Stop
+                                    [ Abort ]
                                 </button>
                             )}
-                            <button
-                                onClick={onSendMessage}
-                                disabled={isLoading || !input.trim()}
-                                className="btn-accent hover-lift flex items-center justify-center rounded-2xl px-5 py-3 text-sm font-semibold disabled:cursor-not-allowed"
-                            >
-                                <Send className="h-5 w-5 text-white" />
-                            </button>
                         </div>
                     </div>
                 </div>

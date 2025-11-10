@@ -61,6 +61,30 @@ export interface AnalyticsData {
         day: string;
         tokens: number;
         cost: number;
+        requests: number;
+    }>;
+    usageByKey: Array<{
+        keyId: number;
+        keyName: string;
+        provider: ProviderOption;
+        promptTokens: number;
+        completionTokens: number;
+        cost: number;
+    }>;
+    providerRequestStats: Array<{
+        provider: ProviderOption;
+        requestCount: number;
+        successRate: number;
+        avgLatencyMs: number | null;
+        tokensPerRequest: number;
+    }>;
+    budgetUsage: Array<{
+        keyId: number;
+        keyName: string;
+        provider: ProviderOption;
+        tokenBudget: number;
+        tokensUsed: number;
+        utilization: number;
     }>;
     lastUpdated: string;
 }
