@@ -94,26 +94,24 @@ const AnalyticsPanel = ({
                     <p className="mt-1 text-xs text-gray-500">All providers · lifetime</p>
                 </div>
                 <div className="relative hover-lift rounded-2xl border border-gray-200 bg-white p-4 shadow-[0_25px_55px_rgba(79,70,229,0.08)]">
-                    <div className="flex items-start justify-between gap-3">
-                        <div>
-                            <p className="text-xs uppercase tracking-[0.4em] text-gray-500">Estimated cost</p>
-                            <p className="text-3xl font-semibold text-[#4c1d95]">{`$${estimatedCostValue.toFixed(4)}`}</p>
-                            <p className="text-xs text-gray-500">
-                                {costMode === 'auto'
-                                    ? 'Auto · server reported'
-                                    : `Manual · $${manualRates.prompt.toFixed(2)}/M input • $${manualRates.completion.toFixed(2)}/M output`}
-                            </p>
-                        </div>
-                        <button
-                            type="button"
-                            onClick={onToggleCostSettings}
-                            className="hover-lift rounded-full border border-[#e0e7ff] p-2 text-[#4c1d95] transition hover:bg-[#f5f3ff]"
-                        >
-                            ⋮
-                        </button>
+                    <button
+                        type="button"
+                        onClick={onToggleCostSettings}
+                        className="absolute right-4 top-4 hover-lift rounded-full border border-[#e0e7ff] p-2 text-[#4c1d95] transition hover:bg-[#f5f3ff]"
+                    >
+                        ⋮
+                    </button>
+                    <div className="flex min-h-[210px] flex-col items-center justify-center gap-2 text-center">
+                        <p className="text-xs uppercase tracking-[0.4em] text-gray-500">Estimated cost</p>
+                        <p className="text-4xl font-semibold text-[#4c1d95]">{`$${estimatedCostValue.toFixed(4)}`}</p>
+                        <p className="text-xs text-gray-500 max-w-[16rem]">
+                            {costMode === 'auto'
+                                ? 'Auto · server reported'
+                                : `Manual · $${manualRates.prompt.toFixed(2)}/M input • $${manualRates.completion.toFixed(2)}/M output`}
+                        </p>
                     </div>
                     {showCostSettings && (
-                        <div className="absolute right-4 top-24 z-20 w-72 rounded-2xl border border-gray-200 bg-white p-4 text-sm text-gray-700 shadow-[0_30px_65px_rgba(79,70,229,0.15)]">
+                        <div className="absolute right-4 top-20 z-20 w-72 rounded-2xl border border-gray-200 bg-white p-4 text-sm text-gray-700 shadow-[0_30px_65px_rgba(79,70,229,0.15)]">
                             <div className="flex items-center justify-between">
                                 <p className="text-xs uppercase tracking-[0.3em] text-gray-500">Cost mode</p>
                                 <button
@@ -224,7 +222,7 @@ const AnalyticsPanel = ({
                                     <div key={entry.day} className="relative flex flex-col items-center gap-2 text-center">
                                         <div className="flex h-36 w-12 flex-col justify-end bg-white p-1">
                                             <div
-                                                className="w-full rounded-[12px] bg-gradient-to-t from-[#4ade80] via-[#38bdf8] to-[#6366f1] transition-all"
+                                                className="w-full rounded-none bg-gradient-to-t from-[#4ade80] via-[#38bdf8] to-[#6366f1] transition-all"
                                                 style={{ height: `${heightPercent}%` }}
                                             />
                                         </div>

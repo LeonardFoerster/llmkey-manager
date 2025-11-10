@@ -31,8 +31,240 @@ const derivedVaultKey = CryptoJS.PBKDF2(
 ).toString();
 
 const encryptSecret = (value: string) => CryptoJS.AES.encrypt(value, derivedVaultKey).toString();
-const decryptSecret = (value: string) =>
-    CryptoJS.AES.decrypt(value, derivedVaultKey).toString(CryptoJS.enc.Utf8);
+const normalizeEncryptedValue = (value: unknown): string | undefined => {
+    if (!value) return undefined;
+    if (typeof value === "string") return value;
+    if (Buffer.isBuffer(value)) return value.toString("utf8");
+    if (value instanceof Uint8Array) return Buffer.from(value).toString("utf8");
+    if (typeof value === "object" && "toString" in (value as Record<string, unknown>)) {
+        try {
+            const text = (value as { toString: () => string }).toString();
+            return text || undefined;
+        } catch {
+            return undefined;
+        }
+    }
+    return undefined;
+};
+
+const MAX_TOKEN_LIMIT = 128_000;
+const sanitizeMaxTokensValue = (value: unknown): number | null => {
+    if (typeof value !== "number") return null;
+    const coerced = Math.floor(value);
+    if (!Number.isFinite(coerced) || coerced <= 0) return null;
+    return Math.min(coerced, MAX_TOKEN_LIMIT);
+};
+
+const PLAINTEXT_KEY_PATTERNS = [
+    /^sk-[A-Za-z0-9]{20,}/,
+    /^gsk_[A-Za-z0-9]{20,}/,
+    /^gpta_[A-Za-z0-9]{20,}/,
+    /^xai-[A-Za-z0-9-]{10,}/,
+    /^[A-Za-z0-9_\-]{32,}$/,
+];
+
+const looksLikePlaintextKey = (value: string) =>
+    PLAINTEXT_KEY_PATTERNS.some((pattern) => pattern.test(value));
+
+const parseLegacyVaultSecrets = () => {
+    const raw = process.env.LEGACY_VAULT_SECRETS;
+    if (!raw) return [];
+    const trimmed = raw.trim();
+    if (!trimmed) return [];
+
+    type LegacyEntry = { passphrase: string; salt?: string };
+    const entries: LegacyEntry[] = [];
+
+    if (trimmed.startsWith("[")) {
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) {
+                for (const item of parsed) {
+                    if (item && typeof item.passphrase === "string") {
+                        entries.push({
+                            passphrase: item.passphrase,
+                            salt: typeof item.salt === "string" ? item.salt : undefined,
+                        });
+                    }
+                }
+                return entries;
+            }
+        } catch (error) {
+            console.warn("Failed to parse LEGACY_VAULT_SECRETS JSON:", error);
+        }
+    }
+
+    for (const part of trimmed.split(",")) {
+        const token = part.trim();
+        if (!token) continue;
+        const [passphrase, salt] = token.split("|").map((piece) => piece.trim());
+        if (!passphrase) continue;
+        entries.push({ passphrase, salt: salt || undefined });
+    }
+
+    return entries;
+};
+
+interface VaultPassphraseCandidate {
+    label: string;
+    passphrase: string;
+    requiresRotation: boolean;
+}
+
+const legacyVaultSecrets = parseLegacyVaultSecrets();
+const legacyDerivedCandidates: VaultPassphraseCandidate[] = legacyVaultSecrets.map((entry, index) => ({
+    label: `legacy_pbkdf2_${index + 1}`,
+    passphrase: CryptoJS.PBKDF2(
+        entry.passphrase,
+        CryptoJS.enc.Utf8.parse(entry.salt ?? LOCAL_VAULT_SALT),
+        { keySize: 256 / 32, iterations: 2500 },
+    ).toString(),
+    requiresRotation: true,
+}));
+
+const legacyRawPassphraseCandidates: VaultPassphraseCandidate[] = legacyVaultSecrets.map((entry, index) => ({
+    label: `legacy_raw_${index + 1}`,
+    passphrase: entry.passphrase,
+    requiresRotation: true,
+}));
+
+const vaultPassphraseCandidates: VaultPassphraseCandidate[] = [
+    { label: "primary_pbkdf2", passphrase: derivedVaultKey, requiresRotation: false },
+    { label: "primary_raw", passphrase: LOCAL_VAULT_PASSPHRASE, requiresRotation: true },
+    ...(ENCRYPTION_SECRET && ENCRYPTION_SECRET !== LOCAL_VAULT_PASSPHRASE
+        ? [{ label: "primary_env", passphrase: ENCRYPTION_SECRET, requiresRotation: true }]
+        : []),
+    ...legacyDerivedCandidates,
+    ...legacyRawPassphraseCandidates,
+];
+
+const tryDecryptValue = (cipherText: string, passphrase: string) => {
+    try {
+        const result = CryptoJS.AES.decrypt(cipherText, passphrase).toString(CryptoJS.enc.Utf8);
+        if (result) return result;
+    } catch {
+        // ignore
+    }
+    return "";
+};
+
+const tryDecryptAsCipherParams = (cipherText: string, format: "base64" | "hex", passphrase: string) => {
+    try {
+        const ciphertextWordArray =
+            format === "base64"
+                ? CryptoJS.enc.Base64.parse(cipherText)
+                : CryptoJS.enc.Hex.parse(cipherText);
+        const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: ciphertextWordArray });
+        const result = CryptoJS.AES.decrypt(cipherParams, passphrase).toString(CryptoJS.enc.Utf8);
+        return result || "";
+    } catch {
+        return "";
+    }
+};
+
+const tryDecryptJsonEnvelope = (cipherText: string, passphrase: string) => {
+    try {
+        const parsed = JSON.parse(cipherText) as {
+            ct?: string;
+            ciphertext?: string;
+            iv?: string;
+            salt?: string;
+            s?: string;
+        };
+        const ct = parsed.ct ?? parsed.ciphertext;
+        if (!ct) return "";
+        const ciphertext = /^[0-9a-f]+$/i.test(ct)
+            ? CryptoJS.enc.Hex.parse(ct)
+            : CryptoJS.enc.Base64.parse(ct);
+        const cipherParams = CryptoJS.lib.CipherParams.create({
+            ciphertext,
+            iv: parsed.iv ? CryptoJS.enc.Hex.parse(parsed.iv) : undefined,
+            salt: parsed.s
+                ? CryptoJS.enc.Hex.parse(parsed.s)
+                : parsed.salt
+                    ? CryptoJS.enc.Hex.parse(parsed.salt)
+                    : undefined,
+        });
+        const result = CryptoJS.AES.decrypt(cipherParams, passphrase).toString(CryptoJS.enc.Utf8);
+        return result || "";
+    } catch {
+        return "";
+    }
+};
+
+const decryptWithPassphrase = (cipherText: string, passphrase: string) => {
+    const attempts = [
+        () => tryDecryptValue(cipherText, passphrase),
+        () => (cipherText.trim().startsWith("{") ? tryDecryptJsonEnvelope(cipherText, passphrase) : ""),
+        () => (/^[0-9a-f]+$/i.test(cipherText) ? tryDecryptAsCipherParams(cipherText, "hex", passphrase) : ""),
+        () => (/^[A-Za-z0-9+/=]+$/.test(cipherText) ? tryDecryptAsCipherParams(cipherText, "base64", passphrase) : ""),
+    ];
+
+    for (const attempt of attempts) {
+        const result = attempt();
+        if (result) {
+            return result;
+        }
+    }
+    return "";
+};
+
+const decryptStoredKey = async (params: { id: number; encrypted: string | Buffer; fingerprint?: string | null }) => {
+    const cipherText = normalizeEncryptedValue(params.encrypted)?.trim();
+    if (!cipherText) return null;
+
+    for (const candidate of vaultPassphraseCandidates) {
+        const plaintext = decryptWithPassphrase(cipherText, candidate.passphrase);
+        if (!plaintext) {
+            continue;
+        }
+
+        if (params.fingerprint) {
+            const computed = fingerprintSecret(plaintext);
+            if (computed !== params.fingerprint) {
+                continue;
+            }
+        }
+
+        if (candidate.requiresRotation) {
+            try {
+                const encrypted = encryptSecret(plaintext);
+                const fingerprint = params.fingerprint ?? fingerprintSecret(plaintext);
+                await runStatement(
+                    "UPDATE api_keys SET encrypted_key = ?, key_fingerprint = ? WHERE id = ?",
+                    [encrypted, fingerprint, params.id],
+                );
+                console.info(`Re-encrypted API key ${params.id} with primary vault secret.`);
+            } catch (error) {
+                console.error(`Failed to re-encrypt API key ${params.id}:`, error);
+            }
+        }
+
+        return plaintext;
+    }
+
+    if (looksLikePlaintextKey(cipherText)) {
+        if (params.fingerprint && fingerprintSecret(cipherText) !== params.fingerprint) {
+            console.error(`Detected plaintext key for ${params.id} but fingerprint mismatch.`);
+            return null;
+        }
+        try {
+            const encrypted = encryptSecret(cipherText);
+            const fingerprint = params.fingerprint ?? fingerprintSecret(cipherText);
+            await runStatement(
+                "UPDATE api_keys SET encrypted_key = ?, key_fingerprint = ? WHERE id = ?",
+                [encrypted, fingerprint, params.id],
+            );
+            console.warn(`Plaintext key detected for ${params.id}; re-encrypted with current vault secret.`);
+        } catch (error) {
+            console.error(`Failed to re-encrypt plaintext key ${params.id}:`, error);
+        }
+        return cipherText;
+    }
+
+    console.error(`Unable to decrypt API key ${params.id}: incompatible vault secret or corrupted data.`);
+    return null;
+};
 const fingerprintSecret = (value: string) =>
     CryptoJS.SHA256(value).toString(CryptoJS.enc.Hex).slice(0, 16).toUpperCase();
 
@@ -84,6 +316,7 @@ db.serialize(() => {
     ensureColumn("total_completion_tokens", "INTEGER NOT NULL DEFAULT 0");
     ensureColumn("usage_note", "TEXT");
     ensureColumn("token_budget", "INTEGER");
+    ensureColumn("max_tokens_per_answer", "INTEGER");
     ensureColumn("key_fingerprint", "TEXT");
     ensureColumn("last_validated_at", "DATETIME");
 
@@ -142,6 +375,7 @@ interface ApiKeyRow {
     total_completion_tokens: number;
     usage_note?: string | null;
     token_budget?: number | null;
+    max_tokens_per_answer?: number | null;
     key_fingerprint?: string | null;
     last_validated_at?: string | null;
 }
@@ -199,6 +433,17 @@ const firstValidNumber = (...values: unknown[]): number => {
         }
     }
     return 0;
+};
+
+const parseJsonSafely = (text: string): Record<string, unknown> | undefined => {
+    if (!text) {
+        return undefined;
+    }
+    try {
+        return JSON.parse(text) as Record<string, unknown>;
+    } catch {
+        return undefined;
+    }
 };
 
 const extractUsageFromPayload = (payload: unknown): TokenUsage => {
@@ -270,7 +515,7 @@ const incrementTokenUsage = async (
 app.get("/api/keys", async (req: Request, res: Response) => {
     try {
         const rows = await allStatements<ApiKeyRow>(
-            "SELECT id, provider, key_name, is_valid, created_at, total_prompt_tokens, total_completion_tokens, usage_note, token_budget, key_fingerprint, last_validated_at FROM api_keys ORDER BY created_at DESC",
+            "SELECT id, provider, key_name, is_valid, created_at, total_prompt_tokens, total_completion_tokens, usage_note, token_budget, max_tokens_per_answer, key_fingerprint, last_validated_at FROM api_keys ORDER BY created_at DESC",
             [],
         );
         res.json(rows);
@@ -282,12 +527,13 @@ app.get("/api/keys", async (req: Request, res: Response) => {
 
 app.post("/api/keys", async (req: Request, res: Response) => {
     try {
-        const { provider, key_name, api_key, usage_note, token_budget } = req.body as {
+        const { provider, key_name, api_key, usage_note, token_budget, max_tokens_per_answer } = req.body as {
             provider?: string;
             key_name?: string;
             api_key?: string;
             usage_note?: string | null;
             token_budget?: number | null;
+            max_tokens_per_answer?: number | null;
         };
 
         const normalizedProvider = provider?.toLowerCase() as Provider | undefined;
@@ -304,12 +550,13 @@ app.post("/api/keys", async (req: Request, res: Response) => {
 
         const sanitizedNote = typeof usage_note === "string" ? usage_note.trim().slice(0, 600) : null;
         const tokenBudget = typeof token_budget === "number" && token_budget > 0 ? Math.round(token_budget) : null;
+        const sanitizedMaxTokens = sanitizeMaxTokensValue(max_tokens_per_answer);
 
         const encrypted = encryptSecret(trimmedKey);
         const fingerprint = fingerprintSecret(trimmedKey);
         const result = await runStatement(
-            "INSERT INTO api_keys (provider, key_name, encrypted_key, usage_note, token_budget, key_fingerprint) VALUES (?, ?, ?, ?, ?, ?)",
-            [normalizedProvider, trimmedName, encrypted, sanitizedNote, tokenBudget, fingerprint],
+            "INSERT INTO api_keys (provider, key_name, encrypted_key, usage_note, token_budget, max_tokens_per_answer, key_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [normalizedProvider, trimmedName, encrypted, sanitizedNote, tokenBudget, sanitizedMaxTokens, fingerprint],
         );
         res.status(201).json({ id: result.lastID });
     } catch (error) {
@@ -398,12 +645,21 @@ app.patch("/api/keys/:id", async (req: Request, res: Response) => {
     }
 });
 
-type ProviderClientType = "openai" | "anthropic" | "vertex";
+type ProviderClientType = "openai_responses" | "openai_chat" | "anthropic" | "vertex";
+
+type MaxTokensParam = "max_tokens" | "max_output_tokens" | "max_completion_tokens";
+
+type AuthMode = "bearer" | "apiKey";
 
 interface ProviderConfig {
     url: string;
     type: ProviderClientType;
     defaultModel: string;
+    defaultMaxTokens?: number;
+    maxTokensParam?: MaxTokensParam;
+    defaultTemperature?: number | null;
+    dynamicUrl?: (model: string) => string;
+    authMode?: AuthMode;
     extraHeaders?: Record<string, string>;
 }
 
@@ -418,27 +674,42 @@ const keyTestLimiter = new Map<string, { count: number; expiresAt: number }>();
 
 const providerConfig: Record<Provider, ProviderConfig> = {
     openai: {
-        url: "https://api.openai.com/v1/chat/completions",
-        type: "openai",
+        url: "https://api.openai.com/v1/responses",
+        type: "openai_responses",
         defaultModel: "gpt-5-mini",
+        maxTokensParam: "max_output_tokens",
+        defaultMaxTokens: 4000,
+        defaultTemperature: 1,
     },
     grok: {
         url: "https://api.x.ai/v1/chat/completions",
-        type: "openai",
+        type: "openai_chat",
         defaultModel: "grok-4-fast-reasoning",
+        maxTokensParam: "max_output_tokens",
+        defaultMaxTokens: 4000,
+        defaultTemperature: 0.7,
     },
     claude: {
-        url: "https://api.anthropic.com/v1/chat/completions",
+        url: "https://api.anthropic.com/v1/messages",
         type: "anthropic",
-        defaultModel: "claude-3.5-sonic",
+        defaultModel: "claude-4.5-haiku",
+        maxTokensParam: "max_output_tokens",
+        defaultMaxTokens: 4000,
+        defaultTemperature: 0.7,
         extraHeaders: {
             "Anthropic-Version": "2024-06-11",
         },
     },
     google: {
-        url: "https://generativelanguage.googleapis.com/v1beta/models/chat-bison-001:generateMessage",
+        url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent",
         type: "vertex",
-        defaultModel: "models/chat-bison-001",
+        defaultModel: "gemini-1.5-pro-latest",
+        maxTokensParam: "max_output_tokens",
+        defaultMaxTokens: 1024,
+        defaultTemperature: 0.7,
+        dynamicUrl: (model: string) =>
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        authMode: "apiKey",
     },
 };
 
@@ -447,48 +718,138 @@ interface MessageEntry {
     content: string;
 }
 
-const buildPayload = (config: ProviderConfig, model: string, messages: MessageEntry[]) => {
+const buildPayload = (
+    config: ProviderConfig,
+    model: string,
+    messages: MessageEntry[],
+    maxTokens?: number | null,
+) => {
+    const normalizedMaxTokens =
+        typeof maxTokens === "number" && Number.isFinite(maxTokens)
+            ? Math.max(1, Math.min(Math.floor(maxTokens), MAX_TOKEN_LIMIT))
+            : undefined;
+    const resolvedMaxTokens = normalizedMaxTokens ?? config.defaultMaxTokens;
+    const attachTokenParam = <T extends Record<string, unknown>>(payload: T): T =>
+        resolvedMaxTokens && config.maxTokensParam
+            ? { ...payload, [config.maxTokensParam]: resolvedMaxTokens }
+            : payload;
+
+    const temperature = config.defaultTemperature ?? 0.7;
+
     switch (config.type) {
+        case "openai_responses":
+            return attachTokenParam({
+                model,
+                input: messages.map(msg => ({
+                    role: msg.role,
+                    content: msg.content,
+                })),
+                ...(temperature != null ? { temperature } : {}),
+            });
+        case "openai_chat":
+            return attachTokenParam({
+                model,
+                messages: messages.map(msg => ({
+                    role: msg.role,
+                    content: msg.content,
+                })),
+                ...(temperature != null ? { temperature } : {}),
+            });
         case "anthropic":
-        case "openai":
-            return {
+            return attachTokenParam({
                 model,
-                messages,
-                temperature: 0.7,
-                max_tokens: config.type === "openai" ? 4000 : undefined,
-            };
+                messages: messages.map(msg => ({
+                    role: msg.role,
+                    content: msg.content,
+                })),
+                ...(temperature != null ? { temperature } : {}),
+            });
         case "vertex":
-            return {
+            return attachTokenParam({
                 model,
-                messages: messages.map((msg) => ({
-                    author: msg.role === "assistant" ? "assistant" : "user",
-                    content: [
+                contents: messages.map((msg) => ({
+                    role: msg.role === "assistant" ? "model" : "user",
+                    parts: [
                         {
-                            type: "text",
                             text: msg.role === "system" ? `(system) ${msg.content}` : msg.content,
                         },
                     ],
                 })),
-                temperature: 0.7,
-                max_output_tokens: 1024,
-            };
+                ...(temperature != null ? { temperature } : {}),
+            });
         default:
             return {
                 model,
                 messages,
-                temperature: 0.7,
+                ...(temperature != null ? { temperature } : {}),
             };
     }
 };
 
+const isNonEmptyString = (value: unknown): value is string =>
+    typeof value === "string" && value.trim().length > 0;
+
+const collectTextParts = (value: unknown, visited: WeakSet<object> = new WeakSet()): string[] => {
+    if (isNonEmptyString(value)) {
+        return [value.trim()];
+    }
+    if (Array.isArray(value)) {
+        const aggregated: string[] = [];
+        for (const item of value) {
+            aggregated.push(...collectTextParts(item, visited));
+        }
+        return aggregated;
+    }
+    if (value && typeof value === "object") {
+        const objectValue = value as Record<string, unknown>;
+        if (visited.has(objectValue)) {
+            return [];
+        }
+        visited.add(objectValue);
+
+        const results: string[] = [];
+        const directText = objectValue["text"];
+        if (isNonEmptyString(directText)) {
+            results.push(directText.trim());
+        }
+        const directValue = objectValue["value"];
+        if (isNonEmptyString(directValue)) {
+            results.push(directValue.trim());
+        }
+
+        const nestedKeys = ["content", "message", "output", "response", "data"] as const;
+        for (const key of nestedKeys) {
+            if (key in objectValue) {
+                results.push(...collectTextParts(objectValue[key], visited));
+            }
+        }
+
+        return results;
+    }
+    return [];
+};
+
 const decodeResponseText = (config: ProviderConfig, data: unknown) => {
-    const payload = data as Record<string, unknown>;
+    const payload = (data && typeof data === "object" ? (data as Record<string, unknown>) : {}) as Record<string, unknown>;
     if (config.type === "vertex") {
         const candidates = payload["candidates"];
         if (Array.isArray(candidates) && candidates.length > 0) {
             const firstCandidate = candidates[0] as Record<string, unknown>;
-            if (typeof firstCandidate["content"] === "string") {
-                return firstCandidate["content"] as string;
+            const content = firstCandidate["content"] as Record<string, unknown> | undefined;
+            const parts = content?.["parts"];
+            if (Array.isArray(parts)) {
+                const textParts = parts
+                    .map((part) => {
+                        if (typeof part === "object" && part && "text" in part) {
+                            const textValue = (part as Record<string, unknown>)["text"];
+                            return typeof textValue === "string" ? textValue : undefined;
+                        }
+                        return undefined;
+                    })
+                    .filter((text): text is string => typeof text === "string");
+                if (textParts.length > 0) {
+                    return textParts.join("\n").trim();
+                }
             }
         }
         const output = payload["output"];
@@ -505,20 +866,20 @@ const decodeResponseText = (config: ProviderConfig, data: unknown) => {
         }
     }
 
-    const choices = payload["choices"];
-    if (Array.isArray(choices) && choices.length > 0) {
-        const firstChoice = choices[0] as Record<string, unknown>;
-        const message = firstChoice["message"] as Record<string, unknown> | undefined;
-        if (message && typeof message["content"] === "string") {
-            return message["content"];
-        }
-        if (typeof firstChoice["content"] === "string") {
-            return firstChoice["content"];
-        }
-    }
+    const candidateSources: Array<{ key: string; joinAll?: boolean }> = [
+        { key: "output_text", joinAll: true },
+        { key: "output" },
+        { key: "response" },
+        { key: "choices" },
+        { key: "message" },
+        { key: "content" },
+    ];
 
-    if (typeof payload["content"] === "string") {
-        return payload["content"];
+    for (const source of candidateSources) {
+        const parts = collectTextParts(payload[source.key]);
+        if (parts.length > 0) {
+            return source.joinAll ? parts.join("\n").trim() : parts[0];
+        }
     }
 
     return "No response";
@@ -526,7 +887,7 @@ const decodeResponseText = (config: ProviderConfig, data: unknown) => {
 
 const buildHeaders = (config: ProviderConfig, key: string) => ({
     "Content-Type": "application/json",
-    Authorization: `Bearer ${key}`,
+    ...(config.authMode === "apiKey" ? { "x-goog-api-key": key } : { Authorization: `Bearer ${key}` }),
     ...config.extraHeaders,
 });
 
@@ -549,14 +910,18 @@ app.post("/api/keys/:id/test", async (req: Request, res: Response) => {
     }
 
     try {
-        const row = await getStatement<{ provider: Provider; encrypted_key: string }>(
-            "SELECT provider, encrypted_key FROM api_keys WHERE id = ?",
+        const row = await getStatement<{ provider: Provider; encrypted_key: string | Buffer; key_fingerprint?: string | null; max_tokens_per_answer?: number | null }>(
+            "SELECT provider, encrypted_key, key_fingerprint, max_tokens_per_answer FROM api_keys WHERE id = ?",
             [id],
         );
 
         if (!row) return res.status(404).json({ error: "Key not found" });
 
-        const decrypted = decryptSecret(row.encrypted_key);
+        const decrypted = await decryptStoredKey({
+            id,
+            encrypted: row.encrypted_key,
+            fingerprint: row.key_fingerprint ?? null,
+        });
 
         if (!decrypted) {
             return res.status(400).json({ error: "Failed to decrypt API key" });
@@ -567,15 +932,23 @@ app.post("/api/keys/:id/test", async (req: Request, res: Response) => {
             return res.status(400).json({ error: "Invalid provider" });
         }
 
-        const payload = buildPayload(config, config.defaultModel, [
-            { role: "user", content: "Say hello" },
-        ]);
+        const testMaxTokens = sanitizeMaxTokensValue(row.max_tokens_per_answer ?? undefined);
+        const modelForRequest = config.defaultModel;
+        const payload = buildPayload(
+            config,
+            modelForRequest,
+            [
+                { role: "user", content: "Say hello" },
+            ],
+            testMaxTokens ?? undefined,
+        );
+        const endpoint = config.dynamicUrl ? config.dynamicUrl(modelForRequest) : config.url;
 
         let valid = false;
         let message = "Failed";
 
         try {
-            const response = await fetch(config.url, {
+            const response = await fetch(endpoint, {
                 method: "POST",
                 headers: buildHeaders(config, decrypted),
                 body: JSON.stringify(payload),
@@ -614,7 +987,7 @@ app.post("/api/keys/:id/test", async (req: Request, res: Response) => {
                     incrementTokenUsage(
                         id,
                         row.provider,
-                        config.defaultModel,
+                        modelForRequest,
                         extractUsageFromPayload(responseBody),
                         "test",
                     ).catch((usageError) => {
@@ -650,10 +1023,11 @@ app.post("/api/keys/:id/test", async (req: Request, res: Response) => {
 // --- Chat Endpoint with Security Measures ---
 app.post("/api/chat", async (req: Request, res: Response) => {
     try {
-        const { keyId, model, messages } = req.body as {
+        const { keyId, model, messages, maxTokensPerAnswer } = req.body as {
             keyId?: number;
             model?: string;
             messages?: Array<{ role: string; content: string }>;
+            maxTokensPerAnswer?: number | null;
         };
 
         // Validate input
@@ -675,8 +1049,8 @@ app.post("/api/chat", async (req: Request, res: Response) => {
         }
 
         // Fetch API key
-        const row = await getStatement<{ provider: Provider; encrypted_key: string; is_valid: number }>(
-            "SELECT provider, encrypted_key, is_valid FROM api_keys WHERE id = ?",
+        const row = await getStatement<{ provider: Provider; encrypted_key: string | Buffer; is_valid: number; key_fingerprint?: string | null; max_tokens_per_answer?: number | null }>(
+            "SELECT provider, encrypted_key, is_valid, key_fingerprint, max_tokens_per_answer FROM api_keys WHERE id = ?",
             [keyId],
         );
 
@@ -689,7 +1063,11 @@ app.post("/api/chat", async (req: Request, res: Response) => {
         }
 
         // Decrypt API key
-        const decrypted = decryptSecret(row.encrypted_key);
+        const decrypted = await decryptStoredKey({
+            id: keyId,
+            encrypted: row.encrypted_key,
+            fingerprint: row.key_fingerprint ?? null,
+        });
 
         if (!decrypted) {
             return res.status(400).json({ error: "Failed to decrypt API key" });
@@ -700,14 +1078,24 @@ app.post("/api/chat", async (req: Request, res: Response) => {
         if (!config) {
             return res.status(400).json({ error: "Invalid provider" });
         }
+        const storedMaxTokens = sanitizeMaxTokensValue(row.max_tokens_per_answer ?? undefined);
+        const requestMaxTokens = sanitizeMaxTokensValue(maxTokensPerAnswer);
+        const effectiveMaxTokens = requestMaxTokens ?? storedMaxTokens ?? undefined;
+        const resolvedModel = model ?? config.defaultModel;
+        const endpoint = config.dynamicUrl ? config.dynamicUrl(resolvedModel) : config.url;
 
         // Make API request with timeout
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 30000); // 30 second timeout
 
         try {
-            const payload = buildPayload(config, model ?? config.defaultModel, sanitizedMessages);
-            const response = await fetch(config.url, {
+            const payload = buildPayload(
+                config,
+                resolvedModel,
+                sanitizedMessages,
+                effectiveMaxTokens ?? undefined,
+            );
+            const response = await fetch(endpoint, {
                 method: "POST",
                 headers: buildHeaders(config, decrypted),
                 body: JSON.stringify(payload),
@@ -716,23 +1104,40 @@ app.post("/api/chat", async (req: Request, res: Response) => {
 
             clearTimeout(timeout);
 
+            const rawBody = await response.text();
+            const parsedBody = parseJsonSafely(rawBody);
+
             if (!response.ok) {
-                const errorBody = await response.json().catch(() => ({})) as { error?: { message?: string } };
+                const errorRecord =
+                    parsedBody && typeof parsedBody["error"] === "object"
+                        ? (parsedBody["error"] as Record<string, unknown>)
+                        : undefined;
+                const bodyMessage =
+                    parsedBody && typeof parsedBody["message"] === "string"
+                        ? (parsedBody["message"] as string)
+                        : undefined;
+                const errorMessage =
+                    (errorRecord && typeof errorRecord["message"] === "string" && errorRecord["message"].trim())
+                        ? errorRecord["message"]
+                        : bodyMessage && bodyMessage.trim()
+                            ? bodyMessage
+                            : rawBody || response.statusText || "API request failed";
+
                 return res.status(response.status).json({
-                    error: errorBody.error?.message || "API request failed"
+                    error: errorMessage,
                 });
             }
 
-            const data = await response.json();
-            const parsedData = data as Record<string, unknown>;
+            const payloadRecord: Record<string, unknown> =
+                parsedBody ?? { content: rawBody || "" };
 
-            const content = decodeResponseText(config, parsedData);
+            const content = decodeResponseText(config, payloadRecord);
 
-            const usageSource = parsedData["usage"] ?? parsedData;
+            const usageSource = payloadRecord["usage"] ?? payloadRecord;
             incrementTokenUsage(
                 keyId,
                 row.provider,
-                model ?? config.defaultModel,
+                resolvedModel,
                 extractUsageFromPayload(usageSource),
             ).catch((usageError) => {
                 console.error("Failed to store token usage:", usageError);

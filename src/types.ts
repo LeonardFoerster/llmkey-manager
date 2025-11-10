@@ -23,13 +23,13 @@ export interface Message {
 
 export interface ChatSession {
     id: string;
+    keyId?: number | null;
     title: string;
     messages: Message[];
     provider: ProviderOption;
     model: string;
     presetId?: string | null;
     systemPrompt?: string;
-    tokenSoftLimit?: number | null;
 }
 
 export interface ChatPreset {

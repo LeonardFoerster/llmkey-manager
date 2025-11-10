@@ -2,6 +2,29 @@ import { useEffect, useState, type AnchorHTMLAttributes, type HTMLAttributes } f
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+const MAX_ANIMATION_STEPS = 160;
+
+const tokenizeForAnimation = (text: string): string[] => {
+    if (!text) {
+        return [];
+    }
+    const rawTokens = text.split(/(\s+)/).filter(Boolean);
+    return rawTokens.reduce<string[]>((chunks, part) => {
+        if (/^\s+$/.test(part) && chunks.length > 0) {
+            chunks[chunks.length - 1] += part;
+        } else {
+            chunks.push(part);
+        }
+        return chunks;
+    }, []);
+};
+
+const animationIntervalForLength = (length: number) => {
+    if (length < 120) return 45;
+    if (length < 400) return 28;
+    return 18;
+};
+
 const markdownComponents: Components = {
     a: ({ children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) => (
         <a
@@ -56,7 +79,7 @@ export const AnimatedMessage = ({
             return;
         }
 
-        const tokens = content.length ? content.split(/(\s+)/).filter(chunk => chunk.length > 0) : [];
+        const tokens = tokenizeForAnimation(content);
         if (tokens.length === 0) {
             setVisibleText('');
             setIsComplete(true);
@@ -68,18 +91,21 @@ export const AnimatedMessage = ({
         setIsComplete(false);
 
         let cursor = 0;
-        const timer = setInterval(() => {
-            const chunk = tokens[cursor] ?? '';
-            setVisibleText(prev => prev + chunk);
+        const chunkSize = Math.max(1, Math.ceil(tokens.length / MAX_ANIMATION_STEPS));
+        const intervalDelay = animationIntervalForLength(content.length);
+        const timer = window.setInterval(() => {
+            const nextChunk = tokens.slice(cursor, cursor + chunkSize).join('');
+            setVisibleText(prev => prev + nextChunk);
             onProgress?.();
-            cursor += 1;
+            cursor += chunkSize;
             if (cursor >= tokens.length) {
-                clearInterval(timer);
+                window.clearInterval(timer);
+                setVisibleText(content);
                 setIsComplete(true);
             }
-        }, 70);
+        }, intervalDelay);
 
-        return () => clearInterval(timer);
+        return () => window.clearInterval(timer);
     }, [content, role, onProgress]);
 
     return <MarkdownRenderer content={isComplete ? content : visibleText} className={className} />;

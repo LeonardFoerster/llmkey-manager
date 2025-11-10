@@ -1,46 +1,19 @@
-import { useState, useEffect, useRef, useMemo, type KeyboardEvent } from 'react';
+import { useState, useEffect, useRef, type KeyboardEvent } from 'react';
 import Sidebar from './components/Sidebar';
 import KeyStudio from './components/KeyStudio';
 import AnalyticsPanel from './components/AnalyticsPanel';
 import ChatPanel from './components/ChatPanel';
 import AddKeyModal from './components/AddKeyModal';
-import type { ApiKey, ProviderOption, ChatSession, Message, AnalyticsData, ChatPreset } from './types';
+import type { ApiKey, ProviderOption, ChatSession, Message, AnalyticsData } from './types';
 
 const API_URL = 'http://localhost:5000/api';
 
 const MODELS: Record<ProviderOption, string[]> = {
-    openai: ['gpt-5-mini', 'GPT-5', 'gpt-4o'],
-    grok: ['grok-4-fast-reasoning', 'grok-4'],
-    claude: ['claude-3.5-sonic', 'claude-3.5-pro'],
-    google: ['models/chat-bison-001']
+    openai: ['gpt-5-mini'],
+    grok: ['grok-4-fast-reasoning'],
+    claude: ['claude-4.5-haiku'],
+    google: ['gemini-1.5-pro-latest', 'gemini-1.5-flash-latest']
 };
-
-const CHAT_PRESETS: ChatPreset[] = [
-    {
-        id: 'brainstorm-lite',
-        label: 'Brainstorm',
-        description: 'Friendly collaborator that keeps answers short.',
-        provider: 'openai',
-        model: 'gpt-5-mini',
-        systemPrompt: 'You are a cooperative brainstorming partner. Provide concise, high-signal ideas and ask clarifying questions when needed.',
-    },
-    {
-        id: 'debug-sage',
-        label: 'Debug',
-        description: 'Code-focused with detailed reasoning.',
-        provider: 'claude',
-        model: 'claude-3.5-pro',
-        systemPrompt: 'You are an expert software engineer. Explain bugs methodically and offer minimal, actionable fixes.',
-    },
-    {
-        id: 'rapid-qa',
-        label: 'Rapid QA',
-        description: 'Fast answers for quick fact checks.',
-        provider: 'grok',
-        model: 'grok-4-fast-reasoning',
-        systemPrompt: 'You answer questions rapidly with bullet summaries and cite assumptions explicitly.',
-    },
-];
 
 interface AnalyticsSnapshot {
     todayTokens: number;
@@ -140,9 +113,9 @@ export default function LLMKeyManager() {
                 setSessions(
                     parsed.map(session => ({
                         ...session,
+                        keyId: session.keyId ?? null,
                         presetId: session.presetId ?? null,
                         systemPrompt: session.systemPrompt ?? '',
-                        tokenSoftLimit: session.tokenSoftLimit ?? null,
                     }))
                 );
             } catch {
@@ -191,6 +164,7 @@ export default function LLMKeyManager() {
             setShowAddKey(false);
             setNewKey(defaultNewKey);
             loadKeys();
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
         } catch (error) {
             alert('Failed to add key');
         }
@@ -204,6 +178,7 @@ export default function LLMKeyManager() {
                 headers: headers()
             });
             loadKeys();
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
         } catch (error) {
             alert('Failed to delete key');
         }
@@ -218,6 +193,7 @@ export default function LLMKeyManager() {
             const data = await res.json();
             alert(data.message);
             loadKeys();
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
         } catch (error) {
             alert('Test failed');
         }
@@ -231,6 +207,7 @@ export default function LLMKeyManager() {
                 body: JSON.stringify(updates)
             });
             loadKeys();
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
         } catch (error) {
             alert('Failed to update key details');
         }
@@ -244,13 +221,13 @@ export default function LLMKeyManager() {
         }
         const newSession: ChatSession = {
             id: Date.now().toString(),
+            keyId: validKey.id,
             title: 'New Chat',
             messages: [],
             provider: validKey.provider,
             model: MODELS[validKey.provider][0],
             presetId: null,
             systemPrompt: '',
-            tokenSoftLimit: null
         };
         const updated = [...sessions, newSession];
         saveSessions(updated);
@@ -270,27 +247,17 @@ export default function LLMKeyManager() {
         saveSessions(updated);
     };
 
-    const handleApplyPreset = (sessionId: string, presetId: string) => {
-        const preset = CHAT_PRESETS.find(item => item.id === presetId);
-        if (!preset) return;
-        const hasProvider = apiKeys.some(key => key.provider === preset.provider && key.is_valid === 1);
-        if (!hasProvider) {
-            alert('No validated key for that preset provider yet.');
+    const handleSelectKey = (sessionId: string, keyId: number) => {
+        const selected = apiKeys.find(key => key.id === keyId && key.is_valid === 1);
+        if (!selected) {
+            alert('Selected key is no longer available. Please validate it again.');
             return;
         }
         handleUpdateSession(sessionId, session => ({
             ...session,
-            provider: preset.provider,
-            model: preset.model,
-            systemPrompt: preset.systemPrompt,
-            presetId: preset.id,
-        }));
-    };
-
-    const handleSoftLimitChange = (sessionId: string, limit: number | null) => {
-        handleUpdateSession(sessionId, session => ({
-            ...session,
-            tokenSoftLimit: limit,
+            keyId: selected.id,
+            provider: selected.provider,
+            model: MODELS[selected.provider][0],
         }));
     };
 
@@ -298,10 +265,19 @@ export default function LLMKeyManager() {
         if (!input.trim() || !activeSession || isLoading) return;
         const session = sessions.find(s => s.id === activeSession);
         if (!session) return;
-        const validKey = apiKeys.find(k => k.provider === session.provider && k.is_valid === 1);
+        const validKey =
+            apiKeys.find(k => k.id === session.keyId && k.is_valid === 1) ??
+            apiKeys.find(k => k.provider === session.provider && k.is_valid === 1);
         if (!validKey) {
             alert('No valid API key for this provider');
             return;
+        }
+
+        if (session.keyId !== validKey.id) {
+            handleUpdateSession(session.id, current => ({
+                ...current,
+                keyId: validKey.id,
+            }));
         }
 
         const userMessage: Message = {
@@ -384,7 +360,8 @@ export default function LLMKeyManager() {
         if (activeSession === id) setActiveSession(null);
     };
 
-    const validatedKeysCount = apiKeys.filter(key => key.is_valid === 1).length;
+    const validatedKeys = apiKeys.filter(key => key.is_valid === 1);
+    const validatedKeysCount = validatedKeys.length;
     const totalTokensUsed = apiKeys.reduce(
         (sum, key) => sum + (key.total_prompt_tokens ?? 0) + (key.total_completion_tokens ?? 0),
         0
@@ -474,10 +451,8 @@ export default function LLMKeyManager() {
                             onStopResponse={stopResponse}
                             isLoading={isLoading}
                             messagesEndRef={messagesEndRef}
-                            presets={CHAT_PRESETS}
-                            onApplyPreset={handleApplyPreset}
-                            onSoftLimitChange={handleSoftLimitChange}
-                            pendingInputTokens={input.length}
+                            validatedKeys={validatedKeys}
+                            onSelectKey={handleSelectKey}
                         />
                     )}
                 </section>
