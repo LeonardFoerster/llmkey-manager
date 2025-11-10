@@ -1,4 +1,13 @@
 {
+  "files": [],
+  "references": [
+    {
+      "path": "./tsconfig.app.json"
+    },
+    {
+      "path": "./tsconfig.node.json"
+    }
+  ],
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
@@ -11,7 +20,11 @@
     "forceConsistentCasingInFileNames": true,
     "outDir": "./dist-server",
     "rootDir": "./",
-    "types": ["node"]
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["server.ts"],
   "exclude": ["node_modules", "dist", "dist-server"]
