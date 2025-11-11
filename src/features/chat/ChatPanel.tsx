@@ -1,5 +1,5 @@
-import type { ApiKey, ChatSession, ProviderOption } from '../types';
-import { MarkdownRenderer, AnimatedMessage } from './MarkdownRenderer';
+import type { ApiKey, ChatSession, ProviderOption } from '../../types';
+import { MarkdownRenderer, AnimatedMessage } from '../../components/MarkdownRenderer';
 import { useCallback, useMemo, type KeyboardEvent, type RefObject } from 'react';
 
 interface ChatPanelProps {
@@ -15,6 +15,8 @@ interface ChatPanelProps {
     messagesEndRef: RefObject<HTMLDivElement | null>;
     validatedKeys: ApiKey[];
     onSelectKey: (sessionId: string, keyId: number) => void;
+    availableProviders: ProviderOption[];
+    onSelectProvider: (provider: ProviderOption) => void;
 }
 
 const ChatPanel = ({
@@ -30,6 +32,8 @@ const ChatPanel = ({
     messagesEndRef,
     validatedKeys,
     onSelectKey,
+    availableProviders,
+    onSelectProvider,
 }: ChatPanelProps) => {
     const handleAnimationProgress = useCallback(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -123,6 +127,7 @@ const ChatPanel = ({
                                             ? 'text-white'
                                             : 'text-neutral-500 hover:text-neutral-200'
                                     }`}
+                                    disabled={!currentSession}
                                 >
                                     [{model}]
                                 </button>
@@ -160,6 +165,23 @@ const ChatPanel = ({
                             className="min-h-[52px] resize-none border border-white/15 bg-neutral-950/70 p-2 font-mono text-sm text-neutral-100 placeholder:text-neutral-500 disabled:opacity-50"
                         />
                         <div className="flex flex-wrap items-center gap-4 text-xs text-bracket">
+                            <div className="flex items-center gap-2 text-[0.65rem] text-neutral-400">
+                                <label className="text-bracket" htmlFor="provider-select">
+                                    provider
+                                </label>
+                                <select
+                                    id="provider-select"
+                                    value={currentSession?.provider ?? ''}
+                                    onChange={(e) => onSelectProvider(e.target.value as ProviderOption)}
+                                    className="min-w-[8rem] rounded border border-white/15 bg-neutral-900 px-4 py-1 text-center text-xs font-semibold text-neutral-100"
+                                >
+                                    {availableProviders.map(provider => (
+                                        <option key={provider} value={provider}>
+                                            {provider}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
                             <button
                                 type="button"
                                 onClick={onSendMessage}

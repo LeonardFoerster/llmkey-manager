@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef, type KeyboardEvent } from 'react';
 import Sidebar from './components/Sidebar';
-import KeyStudio from './components/KeyStudio';
-import AnalyticsPanel from './components/AnalyticsPanel';
-import ChatPanel from './components/ChatPanel';
-import AddKeyModal from './components/AddKeyModal';
+import KeyStudio from './features/keys/KeyStudio';
+import AnalyticsPanel from './features/analytics/AnalyticsPanel';
+import ChatPanel from './features/chat/ChatPanel';
+import AddKeyModal from './features/keys/AddKeyModal';
 import PlexusBackground from './components/PlexusBackground';
 import BackgroundBeamsLayer from './components/BackgroundBeamsLayer';
 import type { ApiKey, ProviderOption, ChatSession, Message, AnalyticsData } from './types';
+import LLMMapOverlay from './features/map/MapOverlay';
+import type { MapResultEntry } from './types/map';
 
 const API_URL = 'http://localhost:5000/api';
 
@@ -24,6 +26,8 @@ interface AnalyticsSnapshot {
     sevenDayAverageCost: number;
     generatedAt: string;
 }
+
+type MapResultStatus = 'pending' | 'success' | 'error';
 
 const SNAPSHOT_STORAGE_KEY = 'analyticsSnapshotCache';
 
@@ -68,10 +72,16 @@ export default function LLMKeyManager() {
             return null;
         }
     });
+    const [isMapOpen, setIsMapOpen] = useState(false);
+    const [mapResults, setMapResults] = useState<MapResultEntry[]>([]);
+    const [mapUnifiedResult, setMapUnifiedResult] = useState<MapResultEntry | null>(null);
+    const [mapPrompt, setMapPrompt] = useState('');
+    const [isMapLoading, setIsMapLoading] = useState(false);
     const [sessions, setSessions] = useState<ChatSession[]>([]);
     const [activeSession, setActiveSession] = useState<string | null>(null);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement | null>(null);
     const fetchControllerRef = useRef<AbortController | null>(null);
 
@@ -86,9 +96,24 @@ export default function LLMKeyManager() {
         }
     }, [view]);
 
+useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+}, [sessions, activeSession]);
+
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [sessions, activeSession]);
+        if (isMapLoading || !isMapOpen) return;
+        setMapUnifiedResult(prev => {
+            const best = selectUnifiedResult(mapResults);
+            return best ?? null;
+        });
+    }, [mapResults, isMapLoading, isMapOpen]);
+
+    const validatedKeys = apiKeys.filter(key => key.is_valid === 1);
+    const updateMapResult = (keyId: number, patch: Partial<MapResultEntry> & { status: MapResultStatus }) => {
+        setMapResults(prev =>
+            prev.map(result => (result.keyId === keyId ? { ...result, ...patch } : result))
+        );
+    };
 
     const headers = () => ({
         'Content-Type': 'application/json'
@@ -260,6 +285,89 @@ export default function LLMKeyManager() {
         }));
     };
 
+    const openMapOverlay = () => {
+        if (validatedKeys.length < 2) {
+            alert('Validate at least two keys to launch map mode.');
+            return;
+        }
+        setIsMapOpen(true);
+        setMapResults([]);
+        setMapPrompt('');
+        setIsMapLoading(false);
+    };
+
+    const executeMapFetch = async () => {
+        if (validatedKeys.length === 0) {
+            alert('No validated keys available for map mode.');
+            return;
+        }
+        const prompt = mapPrompt.trim();
+        if (!prompt) {
+            alert('Enter a prompt to broadcast.');
+            return;
+        }
+
+        const initialResults: MapResultEntry[] = validatedKeys.map(key => ({
+            keyId: key.id,
+            keyName: key.key_name || 'unnamed_key',
+            provider: key.provider,
+            model: MODELS[key.provider]?.[0] ?? 'n/a',
+            status: 'pending',
+        }));
+        setMapResults(initialResults);
+        setMapUnifiedResult(null);
+        setIsMapLoading(true);
+
+        await Promise.all(
+            validatedKeys.map(async (key) => {
+                const model = MODELS[key.provider]?.[0];
+                if (!model) {
+                    updateMapResult(key.id, {
+                        status: 'error',
+                        error: 'No default model configured for provider.',
+                    });
+                    return;
+                }
+
+                const requestMessages: Message[] = [
+                    {
+                        role: 'user',
+                        content: prompt,
+                        timestamp: Date.now(),
+                    },
+                ];
+
+                try {
+                    const res = await fetch(`${API_URL}/chat`, {
+                        method: 'POST',
+                        headers: headers(),
+                        body: JSON.stringify({
+                            keyId: key.id,
+                            model,
+                            messages: requestMessages,
+                            maxTokensPerAnswer: key.max_tokens_per_answer ?? undefined,
+                        }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) {
+                        throw new Error(data.error ?? 'Map fetch failed');
+                    }
+                    updateMapResult(key.id, {
+                        status: 'success',
+                        response: typeof data.content === 'string' ? data.content : JSON.stringify(data),
+                    });
+                } catch (error) {
+                    updateMapResult(key.id, {
+                        status: 'error',
+                        error: error instanceof Error ? error.message : 'Unknown error',
+                    });
+                }
+            })
+        );
+
+        setIsMapLoading(false);
+    };
+
     const sendMessage = async () => {
         if (!input.trim() || !activeSession || isLoading) return;
         const session = sessions.find(s => s.id === activeSession);
@@ -359,7 +467,7 @@ export default function LLMKeyManager() {
         if (activeSession === id) setActiveSession(null);
     };
 
-    const validatedKeys = apiKeys.filter(key => key.is_valid === 1);
+    const availableProviders = Array.from(new Set(validatedKeys.map(key => key.provider))) as ProviderOption[];
     const validatedKeysCount = validatedKeys.length;
     const totalTokensUsed = apiKeys.reduce(
         (sum, key) => sum + (key.total_prompt_tokens ?? 0) + (key.total_completion_tokens ?? 0),
@@ -381,11 +489,20 @@ export default function LLMKeyManager() {
     const estimatedCostValue = costMode === 'auto' ? analyticsData?.totalCost ?? 0 : manualCostEstimate;
     const currentSession = sessions.find(s => s.id === activeSession) ?? null;
 
-    const navItems = [
-        { id: 'chat', label: '[ Nexus ]', action: () => setView('chat') },
-        { id: 'keys', label: '[ Models ]', action: () => setView('keys') },
-        { id: 'analytics', label: '[ Agents ]', action: () => setView('analytics') },
-    ] as const;
+    const handleProviderChange = (provider: ProviderOption) => {
+        if (!currentSession) return;
+        const keyForProvider = validatedKeys.find(key => key.provider === provider && key.is_valid === 1);
+        if (!keyForProvider) {
+            alert('No validated key for selected provider');
+            return;
+        }
+        handleUpdateSession(currentSession.id, session => ({
+            ...session,
+            provider,
+            model: MODELS[provider][0],
+            keyId: keyForProvider.id,
+        }));
+    };
 
     return (
         <div className="relative h-screen w-full overflow-hidden bg-[#0b0d12] text-neutral-100">
@@ -394,56 +511,42 @@ export default function LLMKeyManager() {
             <BackgroundBeamsLayer />
             <div className="relative z-10 flex h-full w-full flex-col gap-6 px-4 py-6 lg:px-10">
                 <header className="panel-shell panel-shell--tight px-4 py-3">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div className="flex items-center justify-between">
                         <div className="flex flex-col gap-1">
                             <p className="text-bracket text-[0.6rem] text-neutral-400">NEXUS</p>
                             <p className="text-xs text-neutral-500">LLM control surface</p>
                         </div>
-                        <nav className="flex flex-wrap items-center gap-3 text-xs text-neutral-400">
-                            {navItems.map(item => (
-                                <button
-                                    key={item.id}
-                                    type="button"
-                                    onClick={() => {
-                                        item.action();
-                                        if (item.id === 'chat' && sessions.length === 0) {
-                                            setActiveSession(null);
-                                        }
-                                    }}
-                                    className={`text-bracket transition ${
-                                        view === item.id ? 'text-neutral-100' : 'hover:text-neutral-200 hover:opacity-80'
-                                    }`}
-                                >
-                                    {item.label}
-                                </button>
-                            ))}
-                            <button
-                                type="button"
-                                onClick={() => setShowAddKey(true)}
-                                className="text-bracket text-neutral-500 transition hover:text-neutral-100 hover:opacity-80"
-                            >
-                                [ Config ]
-                            </button>
-                        </nav>
+                        <p className="text-xs text-neutral-500">orchestrating LLM credentials</p>
                     </div>
                 </header>
 
                 <div className="flex flex-1 min-h-0 flex-col gap-6 lg:flex-row">
-                    <Sidebar
-                        view={view}
-                        onChangeView={setView}
-                        onNewChat={createSession}
-                        onAddKey={() => setShowAddKey(true)}
-                        sessions={sessions}
-                        activeSession={activeSession}
-                        onSelectSession={(id) => {
-                            setActiveSession(id);
-                            setView('chat');
-                        }}
-                        onDeleteSession={deleteSession}
-                        validatedKeysCount={validatedKeysCount}
-                        totalTokensUsed={totalTokensUsed}
-                    />
+                    <div
+                        className={`relative w-full transition-all duration-300 lg:flex-shrink-0 ${
+                            isSidebarCollapsed
+                                ? 'max-h-0 overflow-hidden opacity-0 lg:-translate-x-full lg:w-0'
+                                : 'max-h-full opacity-100 lg:w-72'
+                        }`}
+                    >
+                        <Sidebar
+                            view={view}
+                            onChangeView={setView}
+                            onNewChat={createSession}
+                            onOpenMap={openMapOverlay}
+                            onToggleCollapse={() => setIsSidebarCollapsed(true)}
+                            onAddKey={() => setShowAddKey(true)}
+                            sessions={sessions}
+                            activeSession={activeSession}
+                            onSelectSession={(id) => {
+                                setActiveSession(id);
+                                setView('chat');
+                            }}
+                            onDeleteSession={deleteSession}
+                            validatedKeysCount={validatedKeysCount}
+                            totalTokensUsed={totalTokensUsed}
+                            canLaunchMap={validatedKeys.length >= 2}
+                        />
+                    </div>
 
                     <section className="flex w-full flex-1 min-h-0 flex-col">
                         {view === 'keys' && (
@@ -491,12 +594,34 @@ export default function LLMKeyManager() {
                                     messagesEndRef={messagesEndRef}
                                     validatedKeys={validatedKeys}
                                     onSelectKey={handleSelectKey}
+                                    availableProviders={availableProviders}
+                                    onSelectProvider={handleProviderChange}
                                 />
                             </div>
                         )}
                     </section>
-                </div>
             </div>
+        </div>
+
+        <LLMMapOverlay
+            open={isMapOpen}
+            prompt={mapPrompt}
+            results={mapResults}
+            unifiedResult={mapUnifiedResult}
+            isLoading={isMapLoading}
+            onPromptChange={setMapPrompt}
+            onRun={executeMapFetch}
+            onClose={() => setIsMapOpen(false)}
+        />
+
+        {isSidebarCollapsed && (
+            <div
+                className="fixed left-0 top-1/2 z-30 h-24 w-3 -translate-y-1/2 cursor-pointer rounded-r-full bg-cyan-400/25 transition hover:bg-cyan-300/70"
+                    onMouseEnter={() => setIsSidebarCollapsed(false)}
+                    onClick={() => setIsSidebarCollapsed(false)}
+                    aria-hidden
+                />
+            )}
 
             <AddKeyModal
                 show={showAddKey}
@@ -540,4 +665,16 @@ function computeSnapshot(data: AnalyticsData | null): AnalyticsSnapshot | null {
         sevenDayAverageCost: avgCost,
         generatedAt: new Date().toISOString()
     };
+}
+
+function selectUnifiedResult(results: MapResultEntry[]): MapResultEntry | null {
+    const successes = results.filter(entry => entry.status === 'success' && entry.response);
+    if (successes.length > 0) {
+        return successes.reduce((best, entry) => {
+            const bestLen = best.response?.length ?? 0;
+            const entryLen = entry.response?.length ?? 0;
+            return entryLen > bestLen ? entry : best;
+        }, successes[0]);
+    }
+    return results[0] ?? null;
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
-import type { ProviderOption } from '../types';
-import { formatTokens } from '../utils/format';
+import type { ProviderOption } from '../../types';
+import { formatTokens } from '../../utils/format';
 
 interface NewKeyState {
     provider: ProviderOption;

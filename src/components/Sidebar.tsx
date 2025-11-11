@@ -7,6 +7,8 @@ interface SidebarProps {
     view: ViewMode;
     onChangeView: (view: ViewMode) => void;
     onNewChat: () => void;
+    onOpenMap: () => void;
+    onToggleCollapse: () => void;
     onAddKey: () => void;
     sessions: ChatSession[];
     activeSession: string | null;
@@ -14,12 +16,15 @@ interface SidebarProps {
     onDeleteSession: (id: string) => void;
     validatedKeysCount: number;
     totalTokensUsed: number;
+    canLaunchMap: boolean;
 }
 
 const Sidebar = ({
     view,
     onChangeView,
     onNewChat,
+    onOpenMap,
+    onToggleCollapse,
     onAddKey,
     sessions,
     activeSession,
@@ -27,8 +32,20 @@ const Sidebar = ({
     onDeleteSession,
     validatedKeysCount,
     totalTokensUsed,
+    canLaunchMap,
     }: SidebarProps) => (
-    <aside className="panel-shell flex h-full min-h-0 w-full flex-col p-4 text-sm text-neutral-100 lg:w-72">
+    <aside className="panel-shell flex h-full min-h-0 w-full flex-col p-4 text-sm text-neutral-100">
+        <div className="mb-2 flex items-center justify-between">
+            <p className="text-xs uppercase tracking-[0.3em] text-neutral-500">control</p>
+            <button
+                type="button"
+                onClick={onToggleCollapse}
+                aria-label="Collapse sidebar"
+                className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-xs text-neutral-300 transition hover:bg-white/15"
+            >
+                ←
+            </button>
+        </div>
         <div className="space-y-2 border-b border-white/15 pb-4">
             <p className="text-bracket text-[0.65rem] text-neutral-400">status</p>
             <div className="font-mono text-xs text-neutral-300">
@@ -46,6 +63,16 @@ const Sidebar = ({
                     className="text-left text-bracket text-xs text-neutral-200 transition hover:text-white hover:opacity-80"
                 >
                     [ New Chat ]
+                </button>
+                <button
+                    type="button"
+                    onClick={onOpenMap}
+                    disabled={!canLaunchMap}
+                    className={`text-left text-bracket text-xs transition ${
+                        canLaunchMap ? 'text-neutral-400 hover:text-neutral-100' : 'text-neutral-700 cursor-not-allowed'
+                    }`}
+                >
+                    [ Map ]
                 </button>
                 <button
                     type="button"

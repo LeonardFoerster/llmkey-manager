@@ -1,5 +1,5 @@
-import type { AnalyticsData } from '../types';
-import { formatCurrency, formatTokens } from '../utils/format';
+import type { AnalyticsData } from '../../types';
+import { formatCurrency, formatTokens } from '../../utils/format';
 
 interface AnalyticsSnapshot {
     todayTokens: number;
