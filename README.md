@@ -1,85 +1,104 @@
 # LLM Key Manager
 
-Centralized vault for storing, auditing, and experimenting with LLM API keys. The project pairs a Vite/React dashboard with an Express + SQLite backend that encrypts keys at rest, tracks usage, and exposes a lightweight chat/analytics workspace.
+*Ein lokales Cockpit zum Verwalten, Testen und Beobachten von LLM-API-Schlüsseln – ohne Cloud-Abhängigkeit.*
 
-## Features
-- Encrypted API key vault with per-provider metadata, usage notes, and token budgets.
-- Interactive dashboard for adding/removing keys, switching providers, and reviewing usage analytics.
-- Built-in chat playground with presets for OpenAI, Grok, Claude, and Google models.
-- Local SQLite database automatically migrated on startup—no manual schema management.
+Der Key Manager kombiniert ein Express/SQLite-Backend (Server-seitig verschlüsselte Schlüssel, Nutzungsmetriken, Chat-Proxy) mit einem React-19-Frontend auf Basis von Vite. Ziel ist, unterschiedliche Provider-Keys an einer Stelle zu lagern, sie sicher zu testen, Prompts quer über alle validierten Endpunkte zu broadcasten und Kosten grob im Blick zu behalten.
 
-## Prerequisites
-- Node.js 18+ (needed for React 19 and the ESM server build).
-- npm 10+ (bundled with recent Node distributions).
-- Build tools required by `sqlite3` (`python3`, `make`, `g++`) if you are on Linux/Windows and do not already have them.
+## Überblick & Projektaufbau
 
-## Installation & Setup
+- **Frontend (`src/`)**: React-UI mit Panels für Key-Studio, Chat, Analytics und das LLM-Map-Overlay. Lokale Sessions und Snapshot-Caches werden im Browser gespeichert.
+- **Backend (`server.ts`)**: Express-API mit AES-verschlüsselter Ablage in `db.sqlite`, PBKDF2-Key-Derivation, CORS-Schutz und Provider-spezifischem Routing für OpenAI, Grok, Claude und Google (Vertex).
+- **Datenhaltung**: SQLite-Tabellen `api_keys` (Kredential-Metadaten + Nutzungszähler) und `usage_events` (jede Chat-Anfrage inkl. Tokens, Latenz, Status). Analytics fasst diese Werte zu Kosten, Leaderboards und Zeitreihen zusammen.
 
-### 1. Clone and install dependencies
+```text
+project-root
+├── server.ts              # Express + SQLite API, Verschlüsselung, Provider-Bridges
+├── db.sqlite              # wird beim ersten Start angelegt
+├── src/
+│   ├── features/
+│   │   ├── keys/          # KeyStudio & AddKeyModal
+│   │   ├── chat/          # ChatPanel, Sessions, Modelwahl
+│   │   ├── analytics/     # Nutzungs-Dashboard
+│   │   └── map/           # Prompt-Broadcast Overlay
+│   ├── components/        # Sidebar, visuelle Effekte, Markdown-Renderer
+│   ├── hooks/             # UI-State-Helfer
+│   ├── utils/             # Formatierer, Helferfunktionen
+│   └── types/             # Gemeinsame Datentypen (API-Keys, Sessions, Analytics)
+├── dist / dist-server     # Build-Artefakte (Client / Server)
+└── public                 # Statische Assets
+```
+
+### Funktionen & Datenfluss
+
+- **API-Key Tresor**: Keys werden niemals im Klartext gespeichert. Der Server leitet PBKDF2-Schlüssel aus `LOCAL_VAULT_PASSPHRASE`/`ENCRYPTION_SECRET` ab, AES-verschlüsselt die Secrets und vergleicht Fingerprints, um Altbestände nachzuverschlüsseln.
+- **Key CRUD & Tests**: `/api/keys` liefert, speichert, aktualisiert und löscht Einträge; `/api/keys/:id/test` sendet einen freundlichen „Sag Hallo“-Prompt an den jeweiligen Provider und aktualisiert den Validierungsstatus.
+- **Chat-Proxy**: `/api/chat` nimmt eine Nachrichtenliste entgegen, wählt das passende Modell (OpenAI, Grok, Claude, Google/Vertex) und reicht Antwort + Tokenzählung zurück. Frontend-sessions liegen in `localStorage`.
+- **Usage Tracking**: Jede Anfrage erzeugt einen Datensatz in `usage_events` mit Tokens, Kosten, Status und Latenz. Das Analytics-Panel aggregiert daraus Leaderboards (nach Provider, Modell, Key), Tageskurven sowie Auslastung gegenüber Budgetgrenzen.
+- **LLM Map Overlay**: Broadcastet einen Prompt parallel über alle validierten Keys und zeigt sowohl Einzelantworten als auch eine heuristisch gewählte „Unified Answer“ (beste Antwort nach Antwortstatus/Provider-Priorität).
+
+## Features auf einen Blick
+- Schlüsselverwaltung mit Tokenbudgets, Notizen und Fingerprint-Anzeige
+- Chat-Oberfläche mit Sitzungsverwaltung, System-Prompts, Provider-Switch und Abbruch (AbortController)
+- Analytics mit Auto- oder manuellen Kostensätzen, Snapshot-Caching und Budget-Auslastung
+- „Map Fetch“ zum gleichzeitigen Abfragen aller validierten Keys für schnelle Vergleichbarkeit
+- Vollständige lokale Speicherung: SQLite-Datei plus Browser-Storage – keine externen Dienste notwendig
+
+## Voraussetzungen
+- Node.js **18+** (wegen React 19 & ES Module Serverbuild)
+- npm **10+**
+- Build-Toolchain für `sqlite3` (macOS: Xcode CLT, Debian/Ubuntu: `build-essential`, Windows: „Desktop Development with C++“ oder node-gyp-Abhängigkeiten)
+
+## Installation und lokaler Start
+
+1. **Repository holen & Abhängigkeiten installieren**
+   ```bash
+   git clone <repo-url>
+   cd llmkey-manager
+   npm install
+   ```
+2. **.env anlegen (im Projektstamm neben `server.ts`)**
+   ```ini
+   ENCRYPTION_SECRET=ersetzen-durch-starkes-random
+   LOCAL_VAULT_PASSPHRASE=optional-andere-passphrase
+   LOCAL_VAULT_SALT=llmkey-manager-salt
+   PORT=5000
+   CLIENT_ORIGINS=http://localhost:5173
+   ```
+   | Variable | Zweck | Standard |
+   | --- | --- | --- |
+   | `ENCRYPTION_SECRET` | Master-Secret für AES-Verschlüsselung. Ohne langes Zufalls-Secret ist der Tresor wertlos. | `default-encryption-secret-change-me` |
+   | `LOCAL_VAULT_PASSPHRASE` | Alternative Passphrase für die PBKDF2-Ableitung (fällt sonst auf `ENCRYPTION_SECRET` zurück). | `ENCRYPTION_SECRET` |
+   | `LOCAL_VAULT_SALT` | Salt für die Key-Derivation; ändern falls du Secrets rotierst. | `llmkey-manager-salt` |
+   | `PORT` | API-Port; Frontend erwartet `5000`. | `5000` |
+   | `CLIENT_ORIGINS` | Kommagetrennte Liste erlaubter Browser-Origins (CORS). | `http://localhost:5173` |
+3. **Entwicklungsmodus starten**
+   ```bash
+   npm run dev:server   # Express + SQLite API (tsx watch)
+   npm run dev          # Vite-Frontend unter http://localhost:5173
+   ```
+   API-Endpunkte liegen unter `http://localhost:5000/api`. Beim ersten Start wird `db.sqlite` erzeugt und migriert.
+
+### Produktion
 ```bash
-git clone <repo-url>
-cd llmkey-manager
-npm install
+npm run build   # kompiliert Server (tsc) + Client (Vite)
+npm run start   # startet dist-server/server.js und bedient das gebaute UI
+# oder npm run preview für einen schnellen Check des Frontend-Builds
 ```
 
-### 2. Configure environment variables
-Create a `.env` file in the project root (next to `server.ts`). The server reads these values via `dotenv`.
+## Nützliche npm-Skripte
 
-```ini
-# .env
-ENCRYPTION_SECRET=replace-with-a-strong-random-string
-LOCAL_VAULT_PASSPHRASE=passphrase-used-to-derive-the-vault-key
-LOCAL_VAULT_SALT=llmkey-manager-salt
-PORT=5000
-CLIENT_ORIGINS=http://localhost:5173
-```
-
-| Variable | Purpose | Default |
-| --- | --- | --- |
-| `ENCRYPTION_SECRET` | Master secret for encrypting stored API keys. Always set this to a long random string. | `default-encryption-secret-change-me` |
-| `LOCAL_VAULT_PASSPHRASE` | Optional override for the phrase used to derive the vault key. Falls back to `ENCRYPTION_SECRET`. | `ENCRYPTION_SECRET` |
-| `LOCAL_VAULT_SALT` | Salt used when deriving the AES key. Change it if you rotate secrets. | `llmkey-manager-salt` |
-| `PORT` | Express server port. The frontend expects `5000` during development. | `5000` |
-| `CLIENT_ORIGINS` | Comma-separated list of allowed browser origins for CORS. | `http://localhost:5173` |
-
-### 3. Database
-An SQLite file (`db.sqlite`) is created automatically in the project root the first time the server runs. Existing data is preserved between restarts. Remove the file if you want a clean slate.
-
-### 4. Start the development environment
-Run the backend and frontend in two terminals:
-
-```bash
-# Terminal 1 – API + encryption layer
-npm run dev:server
-
-# Terminal 2 – React UI with Vite
-npm run dev
-```
-
-- Frontend: http://localhost:5173
-- API: http://localhost:5000/api
-
-### 5. Production build
-```bash
-npm run build      # Compiles server (TypeScript) and client (Vite)
-npm run start      # Runs the compiled Express server from dist-server/
-```
-
-The frontend assets are served from `dist/`. If you only need to preview the static build locally, run `npm run preview`.
-
-### 6. Useful scripts
-
-| Script | Description |
+| Script | Beschreibung |
 | --- | --- |
-| `npm run dev` | Starts the Vite dev server with hot reload. |
-| `npm run dev:server` | Runs the Express API with tsx in watch mode. |
-| `npm run build` | Builds both the backend (tsc) and frontend (Vite). |
-| `npm run start` | Launches the compiled Express server (serves API & built UI). |
-| `npm run preview` | Serves the production frontend bundle for QA. |
-| `npm run lint` | Runs ESLint across the repo. |
-| `npm run typecheck` | Validates TypeScript types for server and client configs. |
+| `npm run dev` | Vite Dev-Server mit HMR |
+| `npm run dev:server` | Express-API via tsx im Watch-Modus |
+| `npm run build` | Baut Backend (tsc) und Frontend (Vite) |
+| `npm run start` | Startet den kompilierten Server (`dist-server/`) |
+| `npm run preview` | Serviert das gebaute Frontend für QA |
+| `npm run lint` | ESLint über das gesamte Repo |
+| `npm run typecheck` | TypeScript-Checks für Server- und Client-Konfiguration |
 
-## Troubleshooting
-- `npm install` fails on `sqlite3`: ensure you have a build toolchain installed (Xcode CLT on macOS, `build-essential` on Debian/Ubuntu, or the Windows Build Tools).
-- Browser blocked by CORS: add your UI origin to `CLIENT_ORIGINS` and restart the server.
-- Rotating vault secrets: delete `db.sqlite` or re-import keys after changing the encryption inputs; old encrypted data cannot be decrypted with new secrets.
+## Tipps & Troubleshooting
+- **`sqlite3`-Build zickt**: Prüfe, ob Compiler/Werkzeuge installiert sind (siehe Voraussetzungen).
+- **CORS-Fehler im Browser**: Origin zur Liste in `CLIENT_ORIGINS` hinzufügen und API neu starten.
+- **Secrets rotieren**: Alte Datensätze lassen sich nach Änderung der Vault-Inputs nicht mehr entschlüsseln – `db.sqlite` löschen oder Keys neu importieren.
+- **LLM Map meldet „keine validierten Keys“**: Du brauchst mindestens zwei erfolgreich getestete Einträge, sonst wird der Broadcast blockiert.
