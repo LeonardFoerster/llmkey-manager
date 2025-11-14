@@ -30,8 +30,6 @@ const AddKeyModal = ({
     validatedKeysCount,
     totalTokensUsed,
 }: AddKeyModalProps) => {
-    if (!show) return null;
-
     const scrubTimers = useRef<number[]>([]);
 
     const update = (updates: Partial<NewKeyState>) => onChange({ ...newKey, ...updates });
@@ -59,41 +57,55 @@ const AddKeyModal = ({
         };
     }, [show]);
 
+    if (!show) return null;
+
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 py-6 backdrop-blur">
-            <div className="panel-shell panel-shell--tight w-full max-w-4xl p-6 text-neutral-100">
-                <header className="flex flex-col gap-3 border-b border-white/15 pb-4 md:flex-row md:items-center md:justify-between">
-                    <div>
-                        <p className="text-bracket text-xs text-neutral-500">registry</p>
-                        <p className="text-sm text-neutral-500">store encrypted credentials locally</p>
-                    </div>
-                    <button
-                        type="button"
-                        onClick={onClose}
-                        className="text-bracket text-xs text-neutral-500 transition hover:text-white"
-                    >
-                        [ close ]
-                    </button>
-                </header>
+            <div className="relative w-full max-w-5xl overflow-hidden rounded-[32px] border border-white/10 bg-gradient-to-br from-slate-950/95 via-slate-900/80 to-slate-900/60 p-6 text-slate-100 shadow-[0_35px_80px_rgba(2,6,23,0.85)]">
+                <div className="pointer-events-none absolute inset-0 opacity-60">
+                    <div className="absolute -left-16 top-0 h-64 w-64 rounded-full bg-cyan-400/20 blur-[120px]" />
+                    <div className="absolute -bottom-16 right-0 h-64 w-64 rounded-full bg-indigo-500/20 blur-[140px]" />
+                </div>
+                <div className="relative z-10 grid gap-6 lg:grid-cols-[0.9fr,1.1fr]">
+                    <header className="lg:col-span-2 flex flex-col gap-3 border-b border-white/10 pb-4 md:flex-row md:items-center md:justify-between">
+                        <div>
+                            <p className="text-bracket text-[0.55rem] text-slate-500">registry intake</p>
+                            <p className="text-sm text-slate-400">Store encrypted credentials locally with scrubbed clipboard.</p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="rounded-full border border-white/10 px-4 py-2 text-[0.65rem] uppercase tracking-[0.35em] text-slate-300 transition hover:border-cyan-300/40 hover:text-white"
+                        >
+                            close
+                        </button>
+                    </header>
 
-                <div className="mt-4 grid gap-6 md:grid-cols-[0.8fr,1.2fr]">
-                    <section className="space-y-3 border border-white/15 bg-neutral-950/60 p-4 font-mono text-xs text-neutral-300">
-                        <p>validated_keys: {validatedKeysCount}</p>
-                        <p>tokens_recorded: {formatTokens(totalTokensUsed)}</p>
-                        <p>scrub_policy: clipboard · 8s</p>
-                        <p>storage: sqlite + aes-256</p>
-                        <p className="text-neutral-500">
+                    <section className="space-y-4 rounded-3xl border border-white/10 bg-white/5 p-4 font-mono text-xs text-slate-300">
+                        <div className="space-y-1 text-slate-100">
+                            <p>validated_keys: {validatedKeysCount}</p>
+                            <p>tokens_recorded: {formatTokens(totalTokensUsed)}</p>
+                            <p>scrub_policy: clipboard · 8s</p>
+                            <p>storage: sqlite + aes-256</p>
+                        </div>
+                        <p className="text-slate-500">
                             Paste raw secrets only. Values are encrypted at rest and never rendered once saved.
                         </p>
+                        <div className="rounded-2xl border border-white/10 bg-black/30 p-3 text-[0.65rem] text-slate-400">
+                            <p className="text-bracket text-[0.55rem] text-slate-500">guidance</p>
+                            <p>
+                                Provide an explicit label, provider, and optional budget + notes to keep large fleets organized.
+                            </p>
+                        </div>
                     </section>
 
-                    <section className="space-y-4 text-sm text-neutral-200">
-                        <label className="space-y-1 text-xs text-neutral-400">
+                    <section className="space-y-4 rounded-3xl border border-white/10 bg-black/30 p-4 text-sm text-slate-100">
+                        <label className="space-y-1 text-xs text-slate-400">
                             provider
                             <select
                                 value={newKey.provider}
                                 onChange={(e) => update({ provider: e.target.value as ProviderOption })}
-                                className="w-full border border-white/15 bg-neutral-900/60 px-3 py-2 font-mono text-sm text-neutral-100"
+                                className="w-full rounded-2xl border border-white/10 bg-white/5 px-3 py-2 font-mono text-sm text-slate-100"
                             >
                                 <option value="openai">openai</option>
                                 <option value="grok">grok (x.ai)</option>
@@ -102,37 +114,37 @@ const AddKeyModal = ({
                             </select>
                         </label>
 
-                        <label className="space-y-1 text-xs text-neutral-400">
+                        <label className="space-y-1 text-xs text-slate-400">
                             key_name
                             <input
                                 value={newKey.key_name}
                                 onChange={(e) => update({ key_name: e.target.value })}
-                                className="w-full border border-white/15 bg-neutral-900/60 px-3 py-2 font-mono text-sm text-neutral-100"
-                                placeholder="workspace or env label"
+                                className="w-full rounded-2xl border border-white/10 bg-white/5 px-3 py-2 font-mono text-sm text-slate-100 placeholder:text-slate-500"
+                                placeholder="workspace or environment label"
                             />
                         </label>
 
-                        <label className="space-y-1 text-xs text-neutral-400">
+                        <label className="space-y-1 text-xs text-slate-400">
                             api_key
                             <input
                                 value={newKey.api_key}
                                 onChange={(e) => update({ api_key: e.target.value })}
-                                className="w-full border border-white/15 bg-neutral-900/60 px-3 py-2 font-mono text-sm text-neutral-100"
+                                className="w-full rounded-2xl border border-white/10 bg-white/5 px-3 py-2 font-mono text-sm text-slate-100 placeholder:text-slate-500"
                                 placeholder="sk-..."
                             />
                         </label>
 
-                        <label className="space-y-1 text-xs text-neutral-400">
+                        <label className="space-y-1 text-xs text-slate-400">
                             max_tokens_per_answer
                             <input
                                 type="number"
                                 value={newKey.max_tokens_per_answer}
                                 onChange={(e) => update({ max_tokens_per_answer: Number(e.target.value) })}
-                                className="w-full border border-white/15 bg-neutral-900/60 px-3 py-2 font-mono text-sm text-neutral-100"
+                                className="w-full rounded-2xl border border-white/10 bg-white/5 px-3 py-2 font-mono text-sm text-slate-100"
                             />
                         </label>
 
-                        <label className="space-y-1 text-xs text-neutral-400">
+                        <label className="space-y-1 text-xs text-slate-400">
                             token_budget (optional)
                             <input
                                 type="number"
@@ -140,39 +152,39 @@ const AddKeyModal = ({
                                 onChange={(e) =>
                                     update({ token_budget: e.target.value === '' ? '' : Number(e.target.value) })
                                 }
-                                className="w-full border border-white/15 bg-neutral-900/60 px-3 py-2 font-mono text-sm text-neutral-100"
+                                className="w-full rounded-2xl border border-white/10 bg-white/5 px-3 py-2 font-mono text-sm text-slate-100 placeholder:text-slate-500"
                                 placeholder="null"
                             />
                         </label>
 
-                        <label className="space-y-1 text-xs text-neutral-400">
+                        <label className="space-y-1 text-xs text-slate-400">
                             usage_note
                             <textarea
                                 value={newKey.usage_note}
                                 onChange={(e) => update({ usage_note: e.target.value })}
                                 rows={4}
-                                className="w-full border border-white/15 bg-neutral-900/60 px-3 py-2 font-mono text-sm text-neutral-100"
+                                className="w-full rounded-2xl border border-white/10 bg-white/5 px-3 py-2 font-mono text-sm text-slate-100 placeholder:text-slate-500"
                                 placeholder="document guardrails or owners"
                             />
                         </label>
                     </section>
-                </div>
 
-                <div className="mt-6 flex flex-wrap justify-end gap-4 text-bracket text-xs">
-                    <button
-                        type="button"
-                        onClick={onClose}
-                        className="text-neutral-500 transition hover:text-neutral-300"
-                    >
-                        [ cancel ]
-                    </button>
-                    <button
-                        type="button"
-                        onClick={onSubmit}
-                        className="text-neutral-200 transition hover:text-white"
-                    >
-                        [ store key ]
-                    </button>
+                    <div className="lg:col-span-2 mt-4 flex flex-wrap justify-end gap-4 text-bracket text-xs">
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="rounded-full border border-white/10 px-4 py-2 text-slate-400 transition hover:text-white"
+                        >
+                            [ cancel ]
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onSubmit}
+                            className="rounded-full border border-cyan-400/50 bg-cyan-400/10 px-5 py-2 text-white transition hover:border-cyan-300 hover:bg-cyan-400/20"
+                        >
+                            [ store key ]
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>

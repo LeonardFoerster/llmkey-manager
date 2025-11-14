@@ -26,6 +26,8 @@ interface AnalyticsPanelProps {
     onToggleCostSettings: () => void;
     estimatedCostValue: number;
     snapshot: AnalyticsSnapshot | null;
+    focusKeyId?: number | null;
+    onClearFocus?: () => void;
 }
 
 const AnalyticsPanel = ({
@@ -40,10 +42,12 @@ const AnalyticsPanel = ({
     onToggleCostSettings,
     estimatedCostValue,
     snapshot,
+    focusKeyId,
+    onClearFocus,
 }: AnalyticsPanelProps) => {
     if (isLoading) {
         return (
-            <div className="panel-shell flex flex-1 items-center justify-center p-6 font-mono text-xs text-neutral-300">
+            <div className="panel-shell flex flex-1 items-center justify-center p-6 font-mono text-xs text-slate-400">
                 [ loading analytics ]
             </div>
         );
@@ -51,7 +55,7 @@ const AnalyticsPanel = ({
 
     if (error) {
         return (
-            <div className="panel-shell flex flex-1 items-center justify-center p-6 font-mono text-xs text-red-400">
+            <div className="panel-shell flex flex-1 items-center justify-center p-6 font-mono text-xs text-rose-300">
                 error: {error}
             </div>
         );
@@ -59,7 +63,7 @@ const AnalyticsPanel = ({
 
     if (!analyticsData) {
         return (
-            <div className="panel-shell flex flex-1 items-center justify-center p-6 font-mono text-xs text-neutral-300">
+            <div className="panel-shell flex flex-1 items-center justify-center p-6 font-mono text-xs text-slate-400">
                 no usage recorded yet
             </div>
         );
@@ -69,6 +73,7 @@ const AnalyticsPanel = ({
     const usageByTime = analyticsData.usageByTime ?? [];
     const modelUsage = analyticsData.usageByModel ?? [];
     const keyLeaderboard = analyticsData.usageByKey ?? [];
+    const focusedEntry = focusKeyId ? keyLeaderboard.find(entry => entry.keyId === focusKeyId) : null;
     const providerStats = analyticsData.providerRequestStats ?? [];
     const budgetUsage = analyticsData.budgetUsage ?? [];
 
@@ -131,66 +136,157 @@ const AnalyticsPanel = ({
     );
 
     return (
-        <div className="panel-shell flex flex-1 min-h-0 flex-col gap-5 overflow-y-auto p-5 font-mono text-xs text-neutral-100">
-            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-                <div>
-                    <p className="text-bracket text-[0.6rem] text-neutral-500">analytics</p>
-                    <p className="text-sm text-neutral-500">observability stream · regenerated {snapshot?.generatedAt ?? 'n/a'}</p>
+        <div className="panel-shell flex flex-1 min-h-0 flex-col gap-6 overflow-y-auto p-6 text-slate-100">
+            <div className="grid gap-4 lg:grid-cols-[1.5fr,0.7fr]">
+                <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-slate-950/80 to-slate-900/40 p-5 shadow-[0_25px_60px_rgba(3,7,18,0.65)]">
+                    <div className="flex flex-col gap-1">
+                        <p className="text-bracket text-[0.55rem] text-slate-500">usage snapshot</p>
+                        <p className="text-sm text-slate-400">regenerated {snapshot?.generatedAt ?? 'n/a'}</p>
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                        <SnapshotLine
+                            label="tokens_today"
+                            primary={formatTokens(snapshot?.todayTokens ?? latestTokens)}
+                            secondary={`avg_7d=${formatTokens(Math.round(snapshot?.sevenDayAverageTokens ?? averageTokens7d))}`}
+                        />
+                        <SnapshotLine
+                            label="cost_today"
+                            primary={formatCurrency(snapshot?.todayCost ?? peakDay.cost)}
+                            secondary={`avg_7d=${formatCurrency(snapshot?.sevenDayAverageCost ?? analyticsData.totalCost)}`}
+                        />
+                        <SnapshotLine
+                            label="requests_mean"
+                            primary={avgRequestsPerDay.toFixed(1)}
+                            secondary={`${totalRequests} total`}
+                        />
+                        <SnapshotLine
+                            label="velocity"
+                            primary={`${latestDelta >= 0 ? '+' : ''}${latestDelta.toFixed(1)}%`}
+                            secondary="vs 7d avg"
+                        />
+                    </div>
                 </div>
-                <div className="flex items-center gap-4">
-                    <p className="text-sm text-neutral-300">
-                        estimated_cost: {formatCurrency(estimatedCostValue)}
-                    </p>
-                    <button
-                        type="button"
-                        onClick={() => onCostModeChange(costMode === 'auto' ? 'manual' : 'auto')}
-                        className="text-bracket text-[0.6rem] text-neutral-400 transition hover:text-white"
-                    >
-                        [ mode: {costMode} ]
-                    </button>
-                    <button
-                        type="button"
-                        onClick={onToggleCostSettings}
-                        className="text-bracket text-[0.6rem] text-neutral-500 transition hover:text-white"
-                    >
-                        {showCostSettings ? '[ hide inputs ]' : '[ edit rates ]'}
-                    </button>
+
+                <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-slate-950/80 via-slate-900/40 to-slate-900/20 p-5">
+                    <p className="text-bracket text-[0.55rem] text-slate-500">cost channel</p>
+                    <p className="mt-4 text-3xl font-semibold text-white">{formatCurrency(estimatedCostValue)}</p>
+                    <p className="text-sm text-slate-400">blended run-rate · mode {costMode}</p>
+                    <div className="mt-4 flex flex-wrap gap-2 text-[0.65rem] uppercase tracking-[0.35em]">
+                        <button
+                            type="button"
+                            onClick={() => onCostModeChange('auto')}
+                            className={`rounded-full border px-4 py-2 transition ${
+                                costMode === 'auto'
+                                    ? 'border-cyan-400/60 bg-cyan-400/10 text-white'
+                                    : 'border-white/10 bg-white/5 text-slate-400 hover:border-cyan-300/40 hover:text-white'
+                            }`}
+                        >
+                            auto
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => onCostModeChange('manual')}
+                            className={`rounded-full border px-4 py-2 transition ${
+                                costMode === 'manual'
+                                    ? 'border-cyan-400/60 bg-cyan-400/10 text-white'
+                                    : 'border-white/10 bg-white/5 text-slate-400 hover:border-cyan-300/40 hover:text-white'
+                            }`}
+                        >
+                            manual
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onToggleCostSettings}
+                            className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-slate-300 transition hover:border-cyan-300/40 hover:text-white"
+                        >
+                            {showCostSettings ? 'hide inputs' : 'adjust rates'}
+                        </button>
+                    </div>
+                    {showCostSettings && (
+                        <div className="mt-4 grid gap-3 text-xs text-slate-300 sm:grid-cols-2">
+                            <label className="space-y-1">
+                                <span className="text-bracket text-[0.55rem] text-slate-500">prompt/million</span>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    value={manualRates.prompt}
+                                    onChange={(e) => onManualRateChange({ ...manualRates, prompt: Number(e.target.value) })}
+                                    className="w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-slate-100"
+                                />
+                            </label>
+                            <label className="space-y-1">
+                                <span className="text-bracket text-[0.55rem] text-slate-500">completion/million</span>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    value={manualRates.completion}
+                                    onChange={(e) =>
+                                        onManualRateChange({
+                                            ...manualRates,
+                                            completion: Number(e.target.value),
+                                        })
+                                    }
+                                    className="w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-slate-100"
+                                />
+                            </label>
+                        </div>
+                    )}
                 </div>
             </div>
 
-            {snapshot && (
-                <div className="grid gap-4 text-neutral-100 sm:grid-cols-2">
-                    <SnapshotLine
-                        label="tokens_today"
-                        primary={formatTokens(snapshot.todayTokens)}
-                        secondary={`avg_7d=${formatTokens(Math.round(snapshot.sevenDayAverageTokens))}`}
-                    />
-                    <SnapshotLine
-                        label="cost_today"
-                        primary={formatCurrency(snapshot.todayCost)}
-                        secondary={`avg_7d=${formatCurrency(snapshot.sevenDayAverageCost)}`}
-                    />
+            {focusKeyId && (
+                <div className="rounded-3xl border border-cyan-400/40 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-100">
+                    {focusedEntry ? (
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                            <p>
+                                focused key: <span className="font-semibold">{focusedEntry.keyName}</span> ·{' '}
+                                {formatTokens(focusedEntry.promptTokens + focusedEntry.completionTokens)} recorded
+                            </p>
+                            {onClearFocus && (
+                                <button
+                                    type="button"
+                                    onClick={onClearFocus}
+                                    className="text-xs uppercase tracking-[0.3em] text-cyan-200 transition hover:text-white"
+                                >
+                                    [ clear ]
+                                </button>
+                            )}
+                        </div>
+                    ) : (
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                            <p>No analytics exist yet for the focused key.</p>
+                            {onClearFocus && (
+                                <button
+                                    type="button"
+                                    onClick={onClearFocus}
+                                    className="text-xs uppercase tracking-[0.3em] text-cyan-200 transition hover:text-white"
+                                >
+                                    [ clear ]
+                                </button>
+                            )}
+                        </div>
+                    )}
                 </div>
             )}
 
-            <section className="grid gap-4 text-[0.8rem] text-neutral-200 md:grid-cols-4">
+            <section className="grid gap-4 text-[0.75rem] text-slate-200 md:grid-cols-4">
                 <HighlightCard
                     label="top_provider"
                     title={topProvider.provider}
                     primary={formatTokens(topProvider.tokens)}
-                    secondary={`cost=${formatCurrency(topProvider.cost)}`}
+                    secondary={`cost ${formatCurrency(topProvider.cost)}`}
+                />
+                <HighlightCard
+                    label="top_model"
+                    title={topModel.model}
+                    primary={formatTokens(topModel.tokens)}
+                    secondary={`${topModel.provider} · ${formatCurrency(topModel.cost)}`}
                 />
                 <HighlightCard
                     label="peak_day"
                     title={peakDay.day}
                     primary={formatTokens(peakDay.tokens)}
-                    secondary={`cost=${formatCurrency(peakDay.cost)}`}
-                />
-                <HighlightCard
-                    label="velocity"
-                    title={latestDay?.day ?? 'n/a'}
-                    primary={formatTokens(latestTokens)}
-                    secondary={`${latestDelta >= 0 ? '+' : ''}${latestDelta.toFixed(1)}% vs 7d avg`}
+                    secondary={formatCurrency(peakDay.cost)}
                 />
                 <HighlightCard
                     label="cost_per_1k"
@@ -200,7 +296,7 @@ const AnalyticsPanel = ({
                 />
             </section>
 
-            <section className="grid gap-4 text-[0.75rem] text-neutral-200 md:grid-cols-3">
+            <section className="grid gap-4 text-[0.75rem] text-slate-200 md:grid-cols-3">
                 <HighlightCard
                     label="avg_requests/day"
                     title="traffic"
@@ -221,22 +317,82 @@ const AnalyticsPanel = ({
                 />
             </section>
 
-            {keyLeaderboard.length > 0 && (
-                <section className="space-y-2 text-neutral-300">
-                    <p className="text-bracket text-[0.6rem] text-neutral-500">top_keys</p>
-                    <div className="space-y-2 text-[0.75rem] text-neutral-200">
-                        {keyLeaderboard.map(entry => (
-                            <div
-                                key={entry.keyId}
-                                className="flex flex-wrap items-center justify-between border-b border-white/10 pb-2"
-                            >
-                                <div>
-                                    <p className="text-neutral-100">{entry.keyName}</p>
-                                    <p className="text-[0.65rem] text-neutral-500">{entry.provider}</p>
-                                </div>
-                                <p className="text-neutral-500">
-                                    tokens={formatTokens(entry.promptTokens + entry.completionTokens)} · cost={formatCurrency(entry.cost)}
+            <section className="grid gap-4 lg:grid-cols-2">
+                <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+                    <p className="text-bracket text-[0.55rem] text-slate-500">usage_mix</p>
+                    <div className="mt-3 space-y-3">
+                        <MixBar label="prompt" value={promptShare} tone="from-cyan-400 to-cyan-600" />
+                        <MixBar label="completion" value={completionShare} tone="from-violet-400 to-pink-500" />
+                    </div>
+                    <p className="mt-3 text-[0.65rem] text-slate-500">
+                        prompt_tokens={formatTokens(totalPromptTokens)} · completion_tokens={formatTokens(totalCompletionTokens)}
+                    </p>
+                    <div className="mt-4 space-y-2 text-xs text-slate-300">
+                        {providerUsage.map(entry => (
+                            <div key={entry.provider} className="flex items-center justify-between rounded-2xl border border-white/5 bg-white/5 px-3 py-2">
+                                <span>{entry.provider}</span>
+                                <span className="text-slate-400">
+                                    {formatTokens(entry.promptTokens + entry.completionTokens)} · {formatCurrency(entry.cost)}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+                <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+                    <p className="text-bracket text-[0.55rem] text-slate-500">models + keys</p>
+                    <div className="mt-3 space-y-2 text-xs text-slate-300">
+                        {modelUsage.map(entry => (
+                            <div key={`${entry.provider}-${entry.model}`} className="rounded-2xl border border-white/5 bg-white/5 px-3 py-2">
+                                <p className="text-slate-200">
+                                    {entry.provider} · {entry.model}
                                 </p>
+                                <p className="text-slate-500">
+                                    prompt={formatTokens(entry.promptTokens)} · completion={formatTokens(entry.completionTokens)} · cost={formatCurrency(entry.cost)}
+                                </p>
+                            </div>
+                        ))}
+                    </div>
+                    {keyLeaderboard.length > 0 && (
+                        <div className="mt-4 space-y-2 text-xs text-slate-300">
+                            {keyLeaderboard.map(entry => (
+                                <div
+                                    key={entry.keyId}
+                                    className={`flex flex-wrap items-center justify-between rounded-2xl border px-3 py-2 ${
+                                        focusKeyId === entry.keyId
+                                            ? 'border-cyan-400/40 bg-cyan-400/10'
+                                            : 'border-white/5 bg-white/5'
+                                    }`}
+                                >
+                                    <div>
+                                        <p className="text-slate-100">{entry.keyName}</p>
+                                        <p className="text-[0.65rem] text-slate-500">{entry.provider}</p>
+                                    </div>
+                                    <p className="text-slate-500">
+                                        {formatTokens(entry.promptTokens + entry.completionTokens)} · {formatCurrency(entry.cost)}
+                                    </p>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </section>
+
+            {budgetUsage.length > 0 && (
+                <section className="rounded-3xl border border-white/10 bg-white/5 p-5 text-xs text-slate-300">
+                    <p className="text-bracket text-[0.55rem] text-slate-500">budget_watch</p>
+                    <div className="mt-3 space-y-3">
+                        {budgetUsage.map(entry => (
+                            <div key={entry.keyId}>
+                                <div className="flex justify-between text-[0.65rem] text-slate-400">
+                                    <span>{entry.keyName}</span>
+                                    <span>{Math.min(100, Math.max(0, entry.utilization)).toFixed(1)}%</span>
+                                </div>
+                                <div className="mt-1 h-2 rounded-full bg-white/5">
+                                    <div
+                                        className="h-full rounded-full bg-gradient-to-r from-rose-400 via-amber-400 to-amber-500"
+                                        style={{ width: `${Math.min(100, Math.max(0, entry.utilization))}%` }}
+                                    />
+                                </div>
                             </div>
                         ))}
                     </div>
@@ -244,12 +400,12 @@ const AnalyticsPanel = ({
             )}
 
             {providerStats.length > 0 && (
-                <section className="space-y-2 text-neutral-300">
-                    <p className="text-bracket text-[0.6rem] text-neutral-500">provider_reliability</p>
-                    <div className="overflow-x-auto rounded-2xl bg-white/5">
-                        <table className="w-full border-collapse text-[0.7rem]">
-                            <thead className="text-neutral-500">
-                                <tr className="text-left uppercase tracking-[0.2em]">
+                <section className="rounded-3xl border border-white/10 bg-white/5 p-5 text-xs text-slate-300">
+                    <p className="text-bracket text-[0.55rem] text-slate-500">provider_reliability</p>
+                    <div className="mt-4 overflow-x-auto">
+                        <table className="w-full border-collapse text-left">
+                            <thead className="text-slate-500">
+                                <tr className="uppercase tracking-[0.2em]">
                                     <th className="px-3 py-2">provider</th>
                                     <th className="px-3 py-2">requests</th>
                                     <th className="px-3 py-2">success</th>
@@ -259,7 +415,7 @@ const AnalyticsPanel = ({
                             </thead>
                             <tbody>
                                 {providerStats.map(stat => (
-                                    <tr key={stat.provider} className="border-t border-white/10 text-neutral-200">
+                                    <tr key={stat.provider} className="border-t border-white/10 text-slate-200">
                                         <td className="px-3 py-2">{stat.provider}</td>
                                         <td className="px-3 py-2">{stat.requestCount}</td>
                                         <td className="px-3 py-2">{stat.successRate.toFixed(1)}%</td>
@@ -273,137 +429,15 @@ const AnalyticsPanel = ({
                 </section>
             )}
 
-            {showCostSettings && (
-                <div className="grid gap-3 border border-white/15 bg-neutral-950/60 p-4 text-neutral-100 sm:grid-cols-2">
-                    <label className="space-y-1 text-[0.65rem] text-neutral-400">
-                        prompt_per_million
-                        <input
-                            type="number"
-                            step="0.01"
-                            value={manualRates.prompt}
-                            onChange={(e) =>
-                                onManualRateChange({
-                                    ...manualRates,
-                                    prompt: Number(e.target.value),
-                                })
-                            }
-                            className="w-full border border-white/15 bg-neutral-900/60 px-3 py-2 text-neutral-100"
-                        />
-                    </label>
-                    <label className="space-y-1 text-[0.65rem] text-neutral-400">
-                        completion_per_million
-                        <input
-                            type="number"
-                            step="0.01"
-                            value={manualRates.completion}
-                            onChange={(e) =>
-                                onManualRateChange({
-                                    ...manualRates,
-                                    completion: Number(e.target.value),
-                                })
-                            }
-                            className="w-full border border-white/15 bg-neutral-900/60 px-3 py-2 text-neutral-100"
-                        />
-                    </label>
-                </div>
-            )}
-
-            <section className="grid gap-4 text-[0.75rem] text-neutral-200 md:grid-cols-2">
-                <div className="rounded-2xl bg-white/5 p-4">
-                    <p className="text-bracket text-[0.6rem] text-neutral-500">usage_mix</p>
-                    <div className="mt-3 space-y-2">
-                        <MixBar label="prompt" value={promptShare} tone="from-sky-400/80 to-sky-600/70" />
-                        <MixBar label="completion" value={completionShare} tone="from-purple-400/80 to-purple-600/70" />
-                    </div>
-                    <p className="mt-3 text-[0.65rem] text-neutral-500">
-                        prompt_tokens={formatTokens(totalPromptTokens)} · completion_tokens={formatTokens(totalCompletionTokens)}
-                    </p>
-                </div>
-                <div className="rounded-2xl bg-white/5 p-4">
-                    <p className="text-bracket text-[0.6rem] text-neutral-500">model_spotlight</p>
-                    <div className="mt-3 text-[0.9rem] text-neutral-100">
-                        {topModel.model} <span className="text-neutral-500">({topModel.provider})</span>
-                    </div>
-                    <p className="text-[0.7rem] text-neutral-400">
-                        tokens={formatTokens(topModel.tokens)} · cost={formatCurrency(topModel.cost)}
-                    </p>
-                </div>
-            </section>
-
-            {budgetUsage.length > 0 && (
-                <section className="space-y-2 text-neutral-300">
-                    <p className="text-bracket text-[0.6rem] text-neutral-500">budget_watch</p>
-                    <div className="space-y-3 text-[0.75rem] text-neutral-200">
-                        {budgetUsage.map(entry => (
-                            <div key={entry.keyId} className="space-y-1">
-                                <div className="flex justify-between text-[0.65rem] text-neutral-400">
-                                    <span>{entry.keyName}</span>
-                                    <span>{Math.min(100, Math.max(0, entry.utilization)).toFixed(1)}%</span>
-                                </div>
-                                <div className="h-2 rounded-full bg-white/5">
-                                    <div
-                                        className="h-full rounded-full bg-gradient-to-r from-rose-400/80 to-amber-500/80"
-                                        style={{ width: `${Math.min(100, Math.max(0, entry.utilization))}%` }}
-                                    />
-                                </div>
-                                <p className="text-[0.6rem] text-neutral-500">
-                                    used={formatTokens(entry.tokensUsed)} · budget={formatTokens(entry.tokenBudget)}
-                                </p>
-                            </div>
-                        ))}
-                    </div>
-                </section>
-            )}
-
-            <section className="space-y-2 text-neutral-300">
-                <p className="text-bracket text-[0.6rem] text-neutral-500">providers</p>
-                <div className="space-y-1 text-[0.75rem] text-neutral-200">
-                    {analyticsData.usageByProvider.map(entry => (
-                        <div key={entry.provider} className="space-y-1 border-b border-white/10 pb-2">
-                            <div className="flex flex-wrap items-center justify-between">
-                                <span>{entry.provider}</span>
-                                <span className="text-neutral-500">
-                                    tokens={formatTokens(entry.promptTokens + entry.completionTokens)} · cost={formatCurrency(entry.cost)}
-                                </span>
-                            </div>
-                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/5">
-                                <div
-                                    className="h-full rounded-full bg-gradient-to-r from-blue-500/70 to-purple-500/70"
-                                    style={{
-                                        width: `${resolvedTotalTokens > 0
-                                            ? ((entry.promptTokens + entry.completionTokens) / resolvedTotalTokens) * 100
-                                            : 0}%`,
-                                    }}
-                                />
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </section>
-
-            <section className="space-y-2 text-neutral-300">
-                <p className="text-bracket text-[0.6rem] text-neutral-500">top_models</p>
-                <div className="space-y-1 text-[0.75rem] text-neutral-200">
-                    {analyticsData.usageByModel.map(entry => (
-                        <div key={`${entry.provider}-${entry.model}`} className="flex flex-col border-b border-white/10 pb-1">
-                            <span>
-                                {entry.provider} :: {entry.model}
-                            </span>
-                            <span className="text-neutral-500">
-                                prompt={formatTokens(entry.promptTokens)} · completion={formatTokens(entry.completionTokens)} · cost={formatCurrency(entry.cost)}
-                            </span>
-                        </div>
-                    ))}
-                </div>
-            </section>
-
-            <section className="space-y-2 text-neutral-300">
-                <p className="text-bracket text-[0.6rem] text-neutral-500">daily_volume</p>
-                <div className="space-y-1 text-[0.75rem] text-neutral-200">
-                    {analyticsData.usageByTime.slice(0, 10).map(entry => (
-                        <div key={entry.day} className="flex items-center justify-between border-b border-white/10 pb-1">
+            <section className="rounded-3xl border border-white/10 bg-white/5 p-5 text-xs text-slate-300">
+                <p className="text-bracket text-[0.55rem] text-slate-500">daily_volume</p>
+                <div className="mt-3 space-y-1">
+                    {usageByTime.slice(0, 10).map(entry => (
+                        <div key={entry.day} className="flex items-center justify-between rounded-2xl border border-white/5 bg-white/5 px-3 py-2">
                             <span>{entry.day}</span>
-                            <span className="text-neutral-500">tokens={formatTokens(entry.tokens)} · cost={formatCurrency(entry.cost)}</span>
+                            <span className="text-slate-500">
+                                tokens={formatTokens(entry.tokens)} · cost={formatCurrency(entry.cost)}
+                            </span>
                         </div>
                     ))}
                 </div>
@@ -421,10 +455,10 @@ const SnapshotLine = ({
     primary: string;
     secondary: string;
 }) => (
-    <div className="border border-white/15 bg-neutral-950/60 p-3 text-[0.75rem] text-neutral-100">
-        <p className="text-bracket text-[0.6rem] text-neutral-500">{label}</p>
-        <p className="text-lg text-neutral-100">{primary}</p>
-        <p className="text-[0.65rem] text-neutral-500">{secondary}</p>
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-[0.75rem] text-slate-100">
+        <p className="text-bracket text-[0.55rem] text-slate-500">{label}</p>
+        <p className="text-xl font-semibold text-white">{primary}</p>
+        <p className="text-[0.65rem] text-slate-500">{secondary}</p>
     </div>
 );
 
@@ -439,17 +473,17 @@ const HighlightCard = ({
     primary: string;
     secondary: string;
 }) => (
-    <div className="rounded-2xl bg-white/5 p-3">
-        <p className="text-bracket text-[0.55rem] text-neutral-500">{label}</p>
-        <p className="text-sm text-neutral-300">{title}</p>
-        <p className="text-2xl text-neutral-100">{primary}</p>
-        <p className="text-[0.65rem] text-neutral-500">{secondary}</p>
+    <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
+        <p className="text-bracket text-[0.55rem] text-slate-500">{label}</p>
+        <p className="text-sm text-slate-300">{title}</p>
+        <p className="text-2xl font-semibold text-white">{primary}</p>
+        <p className="text-[0.65rem] text-slate-500">{secondary}</p>
     </div>
 );
 
 const MixBar = ({ label, value, tone }: { label: string; value: number; tone: string }) => (
     <div>
-        <div className="flex justify-between text-[0.7rem] text-neutral-400">
+        <div className="flex justify-between text-[0.7rem] text-slate-400">
             <span>{label}</span>
             <span>{value.toFixed(1)}%</span>
         </div>

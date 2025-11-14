@@ -8,9 +8,11 @@ import PlexusBackground from './components/PlexusBackground';
 import BackgroundBeamsLayer from './components/BackgroundBeamsLayer';
 import type { ApiKey, ProviderOption, ChatSession, Message, AnalyticsData } from './types';
 import LLMMapOverlay from './features/map/MapOverlay';
+import ToastStack from './components/ToastStack';
 import type { MapResultEntry } from './types/map';
-
-const API_URL = 'http://localhost:5000/api';
+import { useToastQueue } from './hooks/useToastQueue';
+import { usePinnedList } from './hooks/usePinnedList';
+import { analyticsService, chatService, keyService, type NewKeyPayload } from './services/api';
 
 const MODELS: Record<ProviderOption, string[]> = {
     openai: ['gpt-5-mini'],
@@ -82,6 +84,19 @@ export default function LLMKeyManager() {
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+    const { toasts, addToast, removeToast } = useToastQueue();
+    const {
+        list: pinnedSessions,
+        toggle: togglePinnedSessionRaw,
+        replace: replacePinnedSessions,
+    } = usePinnedList<string>('pinnedSessions');
+    const {
+        list: pinnedKeyIds,
+        toggle: togglePinnedKeyRaw,
+        replace: replacePinnedKeys,
+    } = usePinnedList<number>('pinnedKeyIds');
+    const [sessionSearch, setSessionSearch] = useState('');
+    const [analyticsFocusKey, setAnalyticsFocusKey] = useState<number | null>(null);
     const messagesEndRef = useRef<HTMLDivElement | null>(null);
     const fetchControllerRef = useRef<AbortController | null>(null);
 
@@ -101,6 +116,12 @@ useEffect(() => {
 }, [sessions, activeSession]);
 
     useEffect(() => {
+        if (view !== 'analytics') {
+            setAnalyticsFocusKey(null);
+        }
+    }, [view]);
+
+    useEffect(() => {
         if (isMapLoading || !isMapOpen) return;
         setMapUnifiedResult(prev => {
             const best = selectUnifiedResult(mapResults);
@@ -115,15 +136,11 @@ useEffect(() => {
         );
     };
 
-    const headers = () => ({
-        'Content-Type': 'application/json'
-    });
-
     const loadKeys = async () => {
         try {
-            const res = await fetch(`${API_URL}/keys`, { headers: headers() });
-            const data = await res.json();
+            const data = await keyService.list();
             setApiKeys(data);
+            replacePinnedKeys(prev => prev.filter(id => data.some(key => key.id === id)));
         } catch (error) {
             console.error('Failed to load keys:', error);
         }
@@ -134,18 +151,40 @@ useEffect(() => {
         if (stored) {
             try {
                 const parsed = JSON.parse(stored) as ChatSession[];
-                setSessions(
-                    parsed.map(session => ({
-                        ...session,
-                        keyId: session.keyId ?? null,
-                        presetId: session.presetId ?? null,
-                        systemPrompt: session.systemPrompt ?? '',
-                    }))
-                );
+                const normalized = parsed.map(session => ({
+                    ...session,
+                    keyId: session.keyId ?? null,
+                    presetId: session.presetId ?? null,
+                    systemPrompt: session.systemPrompt ?? '',
+                }));
+                setSessions(normalized);
+                replacePinnedSessions(prev => prev.filter(id => normalized.some(session => session.id === id)));
             } catch {
                 setSessions([]);
+                replacePinnedSessions([]);
             }
+        } else {
+            setSessions([]);
+            replacePinnedSessions([]);
         }
+    };
+
+    const toggleSessionPin = (id: string) => {
+        const isPinned = pinnedSessions.includes(id);
+        togglePinnedSessionRaw(id);
+        addToast(isPinned ? 'Thread unpinned' : 'Thread pinned for quick access', 'info');
+    };
+
+    const toggleKeyPin = (id: number) => {
+        const isPinned = pinnedKeyIds.includes(id);
+        togglePinnedKeyRaw(id);
+        addToast(isPinned ? 'Key removed from favorites' : 'Key pinned for quick access', 'info');
+    };
+
+    const focusAnalyticsOnKey = (keyId: number) => {
+        setAnalyticsFocusKey(keyId);
+        setView('analytics');
+        addToast('Focusing analytics on selected key', 'info');
     };
 
     const saveSessions = (updated: ChatSession[]) => {
@@ -157,9 +196,7 @@ useEffect(() => {
         setIsAnalyticsLoading(true);
         setAnalyticsError(null);
         try {
-            const res = await fetch(`${API_URL}/analytics`, { headers: headers() });
-            if (!res.ok) throw new Error(`Stats request failed (${res.status})`);
-            const data: AnalyticsData = await res.json();
+            const data = await analyticsService.fetch();
             setAnalyticsData(data);
             const snapshot = computeSnapshot(data);
             if (snapshot) {
@@ -176,71 +213,78 @@ useEffect(() => {
 
     const addKey = async () => {
         try {
-            const payload = {
+            const payload: NewKeyPayload = {
                 ...newKey,
                 token_budget: newKey.token_budget === '' ? null : Number(newKey.token_budget),
             };
-            await fetch(`${API_URL}/keys`, {
-                method: 'POST',
-                headers: headers(),
-                body: JSON.stringify(payload)
-            });
+            await keyService.create(payload);
             setShowAddKey(false);
             setNewKey(defaultNewKey);
+            addToast('API key stored securely', 'success');
             loadKeys();
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
         } catch (error) {
-            alert('Failed to add key');
+            addToast(error instanceof Error ? error.message : 'Failed to add key', 'error');
         }
     };
 
-    const deleteKey = async (id: number) => {
-        if (!confirm('Delete this key?')) return;
+    const deleteKey = async (id: number, options?: { skipConfirm?: boolean }) => {
+        if (!options?.skipConfirm && !confirm('Delete this key?')) return;
         try {
-            await fetch(`${API_URL}/keys/${id}`, {
-                method: 'DELETE',
-                headers: headers()
-            });
+            await keyService.remove(id);
+            addToast('Key removed from registry', 'success');
             loadKeys();
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
         } catch (error) {
-            alert('Failed to delete key');
+            addToast(error instanceof Error ? error.message : 'Failed to delete key', 'error');
+        }
+    };
+
+    const bulkDeleteKeys = async (ids: number[]) => {
+        if (ids.length === 0) return;
+        try {
+            await Promise.all(ids.map(id => keyService.remove(id)));
+            addToast(`Deleted ${ids.length} key${ids.length === 1 ? '' : 's'}`, 'success');
+            loadKeys();
+        } catch (error) {
+            addToast(error instanceof Error ? error.message : 'Failed to delete selected keys', 'error');
         }
     };
 
     const testKey = async (id: number) => {
         try {
-            const res = await fetch(`${API_URL}/keys/${id}/test`, {
-                method: 'POST',
-                headers: headers()
-            });
-            const data = await res.json();
-            alert(data.message);
+            const message = await keyService.test(id);
+            addToast(message ?? 'Key validated successfully', 'success');
             loadKeys();
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
         } catch (error) {
-            alert('Test failed');
+            addToast(error instanceof Error ? error.message : 'Test failed', 'error');
+        }
+    };
+
+    const bulkTestKeys = async (ids: number[]) => {
+        if (ids.length === 0) return;
+        try {
+            await Promise.all(ids.map(id => keyService.test(id)));
+            addToast(`Triggered ${ids.length} key test${ids.length === 1 ? '' : 's'}`, 'info');
+            loadKeys();
+        } catch (error) {
+            addToast(error instanceof Error ? error.message : 'Failed to test keys', 'error');
+            loadKeys();
         }
     };
 
     const updateKeyMeta = async (id: number, updates: Partial<{ usage_note: string | null; token_budget: number | null }>) => {
         try {
-            await fetch(`${API_URL}/keys/${id}`, {
-                method: 'PATCH',
-                headers: headers(),
-                body: JSON.stringify(updates)
-            });
+            await keyService.updateMeta(id, updates);
+            addToast('Key details updated', 'success');
             loadKeys();
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
         } catch (error) {
-            alert('Failed to update key details');
+            addToast(error instanceof Error ? error.message : 'Failed to update key details', 'error');
         }
     };
 
     const createSession = () => {
         const validKey = apiKeys.find(k => k.is_valid === 1);
         if (!validKey) {
-            alert('Please add and validate an API key first');
+            addToast('Please add and validate an API key first', 'info');
             return;
         }
         const newSession: ChatSession = {
@@ -257,6 +301,7 @@ useEffect(() => {
         saveSessions(updated);
         setActiveSession(newSession.id);
         setView('chat');
+        addToast('New chat ready', 'success');
     };
 
     const handleInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -274,7 +319,7 @@ useEffect(() => {
     const handleSelectKey = (sessionId: string, keyId: number) => {
         const selected = apiKeys.find(key => key.id === keyId && key.is_valid === 1);
         if (!selected) {
-            alert('Selected key is no longer available. Please validate it again.');
+            addToast('Selected key is no longer available. Please validate it again.', 'info');
             return;
         }
         handleUpdateSession(sessionId, session => ({
@@ -287,7 +332,7 @@ useEffect(() => {
 
     const openMapOverlay = () => {
         if (validatedKeys.length < 2) {
-            alert('Validate at least two keys to launch map mode.');
+            addToast('Validate at least two keys to launch map mode.', 'info');
             return;
         }
         setIsMapOpen(true);
@@ -298,12 +343,12 @@ useEffect(() => {
 
     const executeMapFetch = async () => {
         if (validatedKeys.length === 0) {
-            alert('No validated keys available for map mode.');
+            addToast('No validated keys available for map mode.', 'info');
             return;
         }
         const prompt = mapPrompt.trim();
         if (!prompt) {
-            alert('Enter a prompt to broadcast.');
+            addToast('Enter a prompt to broadcast.', 'info');
             return;
         }
 
@@ -338,20 +383,12 @@ useEffect(() => {
                 ];
 
                 try {
-                    const res = await fetch(`${API_URL}/chat`, {
-                        method: 'POST',
-                        headers: headers(),
-                        body: JSON.stringify({
-                            keyId: key.id,
-                            model,
-                            messages: requestMessages,
-                            maxTokensPerAnswer: key.max_tokens_per_answer ?? undefined,
-                        }),
+                    const data = await chatService.send({
+                        keyId: key.id,
+                        model,
+                        messages: requestMessages,
+                        maxTokensPerAnswer: key.max_tokens_per_answer ?? undefined,
                     });
-                    const data = await res.json();
-                    if (!res.ok) {
-                        throw new Error(data.error ?? 'Map fetch failed');
-                    }
                     updateMapResult(key.id, {
                         status: 'success',
                         response: typeof data.content === 'string' ? data.content : JSON.stringify(data),
@@ -376,7 +413,7 @@ useEffect(() => {
             apiKeys.find(k => k.id === session.keyId && k.is_valid === 1) ??
             apiKeys.find(k => k.provider === session.provider && k.is_valid === 1);
         if (!validKey) {
-            alert('No valid API key for this provider');
+            addToast('No valid API key for this provider', 'info');
             return;
         }
 
@@ -419,20 +456,15 @@ useEffect(() => {
             ...updatedMessages
         ];
 
-            const res = await fetch(`${API_URL}/chat`, {
-                method: 'POST',
-                headers: headers(),
-                body: JSON.stringify({
+            const data = await chatService.send(
+                {
                     keyId: validKey.id,
                     model: session.model,
                     messages: requestMessages,
-                    maxTokensPerAnswer: validKey.max_tokens_per_answer ?? undefined
-                }),
-                signal: controller.signal
-            });
-
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error);
+                    maxTokensPerAnswer: validKey.max_tokens_per_answer ?? undefined,
+                },
+                controller.signal
+            );
 
             const assistantMessage: Message = {
                 role: 'assistant',
@@ -447,7 +479,10 @@ useEffect(() => {
             if (error instanceof DOMException && error.name === 'AbortError') {
                 return;
             }
-            alert('Failed to send message: ' + (error instanceof Error ? error.message : 'Unknown error'));
+            addToast(
+                `Failed to send message: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                'error'
+            );
         } finally {
             fetchControllerRef.current = null;
             setIsLoading(false);
@@ -465,6 +500,7 @@ useEffect(() => {
         const updated = sessions.filter(s => s.id !== id);
         saveSessions(updated);
         if (activeSession === id) setActiveSession(null);
+        addToast('Chat deleted', 'success');
     };
 
     const availableProviders = Array.from(new Set(validatedKeys.map(key => key.provider))) as ProviderOption[];
@@ -493,7 +529,7 @@ useEffect(() => {
         if (!currentSession) return;
         const keyForProvider = validatedKeys.find(key => key.provider === provider && key.is_valid === 1);
         if (!keyForProvider) {
-            alert('No validated key for selected provider');
+            addToast('No validated key for selected provider', 'info');
             return;
         }
         handleUpdateSession(currentSession.id, session => ({
@@ -505,27 +541,55 @@ useEffect(() => {
     };
 
     return (
-        <div className="relative h-screen w-full overflow-hidden bg-[#0b0d12] text-neutral-100">
+        <div className="relative min-h-screen w-full overflow-hidden text-slate-100">
             <PlexusBackground />
+            <div className="grid-lights" aria-hidden="true" />
             <div className="lightning-overlay" aria-hidden="true" />
             <BackgroundBeamsLayer />
-            <div className="relative z-10 flex h-full w-full flex-col gap-6 px-4 py-6 lg:px-10">
-                <header className="panel-shell panel-shell--tight px-4 py-3">
-                    <div className="flex items-center justify-between">
-                        <div className="flex flex-col gap-1">
-                            <p className="text-bracket text-[0.6rem] text-neutral-400">NEXUS</p>
-                            <p className="text-xs text-neutral-500">LLM control surface</p>
+            <div className="relative z-10 flex min-h-screen w-full flex-col gap-6 px-4 py-8 lg:px-10">
+                <header className="panel-shell panel-shell--tight px-6 py-5">
+                    <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="flex items-center gap-4">
+                            <div className="pulse-dot flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-slate-900/80 to-slate-800/40 text-[0.6rem] font-semibold tracking-[0.35em] text-cyan-200">
+                                ops
+                            </div>
+                            <div className="space-y-1">
+                                <p className="text-bracket text-[0.55rem] text-slate-400">nexus</p>
+                                <h1 className="text-2xl font-semibold tracking-tight text-white">LLM Control Surface</h1>
+                                <p className="text-sm text-slate-400">Grey + blue flight deck for every credential.</p>
+                            </div>
                         </div>
-                        <p className="text-xs text-neutral-500">orchestrating LLM credentials</p>
+                        <div className="grid w-full gap-3 text-sm text-slate-200 sm:grid-cols-2 lg:w-auto lg:grid-cols-4">
+                            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 backdrop-blur">
+                                <p className="text-[0.6rem] uppercase tracking-[0.35em] text-slate-400">validated</p>
+                                <p className="mt-1 text-2xl font-semibold text-white">{validatedKeysCount}</p>
+                                <p className="text-[0.65rem] text-slate-500">keys ready</p>
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 backdrop-blur">
+                                <p className="text-[0.6rem] uppercase tracking-[0.35em] text-slate-400">tokens</p>
+                                <p className="mt-1 text-xl font-semibold text-white">{totalTokensUsed.toLocaleString()}</p>
+                                <p className="text-[0.65rem] text-slate-500">lifetime usage</p>
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 backdrop-blur">
+                                <p className="text-[0.6rem] uppercase tracking-[0.35em] text-slate-400">threads</p>
+                                <p className="mt-1 text-2xl font-semibold text-white">{sessions.length}</p>
+                                <p className="text-[0.65rem] text-slate-500">stored chats</p>
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 backdrop-blur">
+                                <p className="text-[0.6rem] uppercase tracking-[0.35em] text-slate-400">mode</p>
+                                <p className="mt-1 text-xl font-semibold capitalize text-white">{view}</p>
+                                <p className="text-[0.65rem] text-slate-500">active panel</p>
+                            </div>
+                        </div>
                     </div>
                 </header>
 
                 <div className="flex flex-1 min-h-0 flex-col gap-6 lg:flex-row">
                     <div
-                        className={`relative w-full transition-all duration-300 lg:flex-shrink-0 ${
+                        className={`relative w-full transition-all duration-500 lg:flex-shrink-0 ${
                             isSidebarCollapsed
                                 ? 'max-h-0 overflow-hidden opacity-0 lg:-translate-x-full lg:w-0'
-                                : 'max-h-full opacity-100 lg:w-72'
+                                : 'max-h-[110vh] opacity-100 lg:w-80'
                         }`}
                     >
                         <Sidebar
@@ -545,10 +609,15 @@ useEffect(() => {
                             validatedKeysCount={validatedKeysCount}
                             totalTokensUsed={totalTokensUsed}
                             canLaunchMap={validatedKeys.length >= 2}
+                            pinnedSessionIds={pinnedSessions}
+                            onTogglePinSession={toggleSessionPin}
+                            sessionSearch={sessionSearch}
+                            onSessionSearchChange={setSessionSearch}
+                            onNotify={addToast}
                         />
                     </div>
 
-                    <section className="flex w-full flex-1 min-h-0 flex-col">
+                    <section className="flex w-full flex-1 min-h-0 flex-col gap-6">
                         {view === 'keys' && (
                             <div className="flex flex-1 min-h-0">
                                 <KeyStudio
@@ -557,6 +626,12 @@ useEffect(() => {
                                     onDeleteKey={deleteKey}
                                     onShowAddKey={() => setShowAddKey(true)}
                                     onUpdateKeyMeta={updateKeyMeta}
+                                    onBulkDelete={bulkDeleteKeys}
+                                    onBulkTest={bulkTestKeys}
+                                    pinnedKeys={pinnedKeyIds}
+                                    onTogglePinKey={toggleKeyPin}
+                                    onFocusKeyAnalytics={focusAnalyticsOnKey}
+                                    notify={addToast}
                                 />
                             </div>
                         )}
@@ -575,6 +650,8 @@ useEffect(() => {
                                     onToggleCostSettings={() => setShowCostSettings(prev => !prev)}
                                     estimatedCostValue={estimatedCostValue}
                                     snapshot={analyticsSnapshot}
+                                    focusKeyId={analyticsFocusKey}
+                                    onClearFocus={() => setAnalyticsFocusKey(null)}
                                 />
                             </div>
                         )}
@@ -600,23 +677,23 @@ useEffect(() => {
                             </div>
                         )}
                     </section>
+                </div>
             </div>
-        </div>
 
-        <LLMMapOverlay
-            open={isMapOpen}
-            prompt={mapPrompt}
-            results={mapResults}
-            unifiedResult={mapUnifiedResult}
-            isLoading={isMapLoading}
-            onPromptChange={setMapPrompt}
-            onRun={executeMapFetch}
-            onClose={() => setIsMapOpen(false)}
-        />
+            <LLMMapOverlay
+                open={isMapOpen}
+                prompt={mapPrompt}
+                results={mapResults}
+                unifiedResult={mapUnifiedResult}
+                isLoading={isMapLoading}
+                onPromptChange={setMapPrompt}
+                onRun={executeMapFetch}
+                onClose={() => setIsMapOpen(false)}
+            />
 
-        {isSidebarCollapsed && (
-            <div
-                className="fixed left-0 top-1/2 z-30 h-24 w-3 -translate-y-1/2 cursor-pointer rounded-r-full bg-cyan-400/25 transition hover:bg-cyan-300/70"
+            {isSidebarCollapsed && (
+                <div
+                    className="fixed left-0 top-1/2 z-30 h-28 w-3 -translate-y-1/2 cursor-pointer rounded-r-3xl bg-gradient-to-b from-cyan-400/60 via-sky-500/40 to-transparent shadow-[0_0_35px_rgba(56,189,248,0.45)] transition hover:from-cyan-300/70 hover:via-sky-400/60"
                     onMouseEnter={() => setIsSidebarCollapsed(false)}
                     onClick={() => setIsSidebarCollapsed(false)}
                     aria-hidden
@@ -632,6 +709,7 @@ useEffect(() => {
                 validatedKeysCount={validatedKeysCount}
                 totalTokensUsed={totalTokensUsed}
             />
+            <ToastStack toasts={toasts} onDismiss={removeToast} />
         </div>
     );
 }
