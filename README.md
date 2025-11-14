@@ -44,7 +44,7 @@ project-root
 - Vollständige lokale Speicherung: SQLite-Datei plus Browser-Storage – keine externen Dienste notwendig
 
 ## Voraussetzungen
-- Node.js **18+** (wegen React 19 & ES Module Serverbuild)
+- Node.js **20.19+** (wegen React 19 & ES Module Serverbuild)
 - npm **10+**
 - Build-Toolchain für `sqlite3` (macOS: Xcode CLT, Debian/Ubuntu: `build-essential`, Windows: „Desktop Development with C++“ oder node-gyp-Abhängigkeiten)
 
@@ -52,7 +52,7 @@ project-root
 
 1. **Repository holen & Abhängigkeiten installieren**
    ```bash
-   git clone <repo-url>
+   git clone <https://github.com/LeonardFoerster/llmkey-manager.git>
    cd llmkey-manager
    npm install
    ```
