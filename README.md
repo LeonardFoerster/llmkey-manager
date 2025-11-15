@@ -44,9 +44,9 @@ project-root
 - Vollständige lokale Speicherung: SQLite-Datei plus Browser-Storage – keine externen Dienste notwendig
 
 ## Voraussetzungen
-- Node.js **20.19+** (wegen React 19 & ES Module Serverbuild)
+- Node.js **20.19+** 
 - npm **10+**
-- Build-Toolchain für `sqlite3` (macOS: Xcode CLT, Debian/Ubuntu: `build-essential`, Windows: „Desktop Development with C++“ oder node-gyp-Abhängigkeiten)
+- Build-Toolchain für `sqlite3` 
 
 ## Installation und lokaler Start
 
@@ -84,21 +84,3 @@ npm run build   # kompiliert Server (tsc) + Client (Vite)
 npm run start   # startet dist-server/server.js und bedient das gebaute UI
 # oder npm run preview für einen schnellen Check des Frontend-Builds
 ```
-
-## Nützliche npm-Skripte
-
-| Script | Beschreibung |
-| --- | --- |
-| `npm run dev` | Vite Dev-Server mit HMR |
-| `npm run dev:server` | Express-API via tsx im Watch-Modus |
-| `npm run build` | Baut Backend (tsc) und Frontend (Vite) |
-| `npm run start` | Startet den kompilierten Server (`dist-server/`) |
-| `npm run preview` | Serviert das gebaute Frontend für QA |
-| `npm run lint` | ESLint über das gesamte Repo |
-| `npm run typecheck` | TypeScript-Checks für Server- und Client-Konfiguration |
-
-## Tipps & Troubleshooting
-- **`sqlite3`-Build zickt**: Prüfe, ob Compiler/Werkzeuge installiert sind (siehe Voraussetzungen).
-- **CORS-Fehler im Browser**: Origin zur Liste in `CLIENT_ORIGINS` hinzufügen und API neu starten.
-- **Secrets rotieren**: Alte Datensätze lassen sich nach Änderung der Vault-Inputs nicht mehr entschlüsseln – `db.sqlite` löschen oder Keys neu importieren.
-- **LLM Map meldet „keine validierten Keys“**: Du brauchst mindestens zwei erfolgreich getestete Einträge, sonst wird der Broadcast blockiert.
